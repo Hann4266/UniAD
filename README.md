@@ -25,13 +25,13 @@ https://github.com/OpenDriveLab/UniAD/assets/48089846/bcf685e4-2471-450e-8b77-e0
 
 <br><br>
 
-## 🚀 `2025/02/27` UniAD 2.0 Preview
+## 🚀 `2025/10/29` UniAD 2.0 Release
 
 We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering critical upgrades and future-ready capabilities!
 
 🔑 ​**Key Enhancements**​ 
-- 🛠️ ​**​Framework**: Migrating to `mmdet3d 1.x` & `torch 2.x` (commonly used version today).  
-- 🔄 ​**Compatibility**: Existing workflows preserved - replicate our results via [Evaluation Example](docs/TRAIN_EVAL.md#example). 
+- 🛠️ ​**​Framework**: Migrating to `mmdet3d 1.x` & `torch 2.x` (commonly used version today). Please see [Release Note](https://github.com/OpenDriveLab/UniAD/pull/251).
+- 🔄 ​**Compatibility**: Existing workflows preserved - replicate our results via [Evaluation Example](docs/TRAIN_EVAL.md#example).
 - 📊 ​**Dataset**: Integrating [nuPlan](https://www.nuscenes.org/nuplan) and [NAVSIM](https://github.com/autonomousvision/navsim) datasets.  
 
 ​📅 ​**TODO List**
@@ -58,6 +58,8 @@ We’re thrilled to announce ​**UniAD 2.0**, a milestone release delivering cr
 - :trophy: **SOTA performance**: All tasks within UniAD achieve SOTA performance, especially prediction and planning (motion: 0.71m minADE, occ: 63.4% IoU, planning: 0.31% avg.Col)
 
 ## News <a name="news"></a>
+
+- **`2025/10/29`**: We release a new version of UniAD implementation. Please see the [Release Note](https://github.com/OpenDriveLab/UniAD/pull/251).
 
 - **`Paper Title Change`**: To avoid confusion with the "goal-point" navigation in Robotics, we change the title from "Goal-oriented" to "Planning-oriented" suggested by Reviewers. Thank you!
 
