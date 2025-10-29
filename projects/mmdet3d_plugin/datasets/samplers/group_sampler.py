@@ -70,10 +70,8 @@ class DistributedGroupSampler(Sampler):
                 indice = np.where(self.flag == i)[0]
                 assert len(indice) == size
                 # add .numpy() to avoid bug when selecting indice in parrots.
-                # TODO: check whether torch.randperm() can be replaced by
-                # numpy.random.permutation().
-                indice = indice[list(
-                    torch.randperm(int(size), generator=g).numpy())].tolist()
+                # NOTE: The numpy.random.permutation() was used to replace torch.randperm() for simplified
+                indice = indice[list(np.random.permutation(int(size)))].tolist()
                 extra = int(
                     math.ceil(
                         size * 1.0 / self.samples_per_gpu / self.num_replicas)

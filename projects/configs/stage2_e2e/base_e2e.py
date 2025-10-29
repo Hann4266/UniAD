@@ -478,11 +478,11 @@ info_root = "data/infos/"
 file_client_args = dict(backend="disk")
 ann_file_train=info_root + f"nuscenes_infos_temporal_train.pkl"
 ann_file_val=info_root + f"nuscenes_infos_temporal_val.pkl"
-ann_file_test=info_root + f"nuscenes_infos_temporal_val.pkl"
+ann_file_test = info_root + f"nuscenes_infos_temporal_val.pkl"
 
 
 train_pipeline = [
-    dict(type="LoadMultiViewImageFromFilesInCeph", to_float32=True, file_client_args=file_client_args, img_root=data_root),
+    dict(type="LoadMultiViewImageFromFilesInCeph", to_float32=True, file_client_args=file_client_args, img_root=''),
     dict(type="PhotoMetricDistortionMultiViewImage"),
     dict(
         type="LoadAnnotations3D_E2E",
@@ -545,7 +545,7 @@ train_pipeline = [
 ]
 test_pipeline = [
     dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True,
-            file_client_args=file_client_args, img_root=data_root),
+            file_client_args=file_client_args, img_root=''),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
     dict(type='LoadAnnotations3D_E2E', 
@@ -690,7 +690,7 @@ lr_config = dict(
 )
 total_epochs = 20
 evaluation = dict(
-    interval=4,
+    interval=20,
     pipeline=test_pipeline,
     planning_evaluation_strategy=planning_evaluation_strategy,
 )
@@ -702,3 +702,4 @@ checkpoint_config = dict(interval=1)
 load_from = "ckpts/uniad_base_track_map.pth"
 
 find_unused_parameters = True
+logger_name = 'mmdet'

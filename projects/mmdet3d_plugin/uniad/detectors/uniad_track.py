@@ -386,7 +386,6 @@ class UniADTrack(MVXTwoStageDetector):
             img, img_metas,
             prev_img=prev_img, prev_img_metas=prev_img_metas,
         )
-
         det_output = self.pts_bbox_head.get_detections(
             bev_embed,
             object_query_embeds=track_instances.query,

@@ -4,7 +4,7 @@
 Please make sure you have prepared the environment and the nuScenes dataset. You can check it by simply evaluating the pre-trained first-stage(track_map) model as follows:
 ```shell
 cd UniAD
-./tools/uniad_dist_eval.sh ./projects/configs/stage1_track_map/base_track_map.py ./ckpts/uniad_base_track_map.pth 8
+./tools/uniad_dist_eval.sh ./projects/configs/stage1_track_map/base_track_map.py ./ckpts/uniad_base_track_map.pth 8 # (8 is the number of GPUs)
 
 # For slurm users:
 # ./tools/uniad_slurm_eval.sh YOUR_PARTITION ./projects/configs/stage1_track_map/base_track_map.py ./ckpts/uniad_base_track_map.pth 8
@@ -13,9 +13,9 @@ If everything is prepared properly, the output results should be:
 
 ```
 Aggregated results: 
-AMOTA	0.390 
-AMOTP	1.300
-RECALL	0.489
+AMOTA	0.394 
+AMOTP	1.316
+RECALL	0.484
 ```
 
 **Note**: If you evaluate with different number of GPUs rather than 8, the results might be slightly different.
@@ -45,6 +45,15 @@ The first-stage training takes ~ 50 GB GPU memory, ~ 2 days for 6 epochs on 8 A1
 
 The second-stage training takes ~ 17 GB GPU memory, ~ 4 days for 20 epochs on 8 A100 GPUs.
 * **NOTE**: Compared to the first-stage, much less GPU memory is required because we freeze the BEV encoder in this stage to focus on learning task-specific queries. Due to this, you can run the second-stage training on V100 or 3090 devices. -->
+### Bevformer Backbone Training
+we integrated BEVFormer training (you also can use other BEV backbone) into the UniAD code repository in this version.
+```shell
+# Training
+./tools/uniad_dist_train.sh ./projects/configs/bevformer/bevformer_base.py N_GPUS
+
+# Evaluation
+./tools/uniad_dist_train.sh ./projects/configs/bevformer/bevformer_base.py UniAD/ckpts/bevformer_r101_dcn_24ep.pth N_GPUS
+```
 
 
 ### Training Command

@@ -204,7 +204,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         frame_idx = input_dict['frame_idx']
         scene_token = input_dict['scene_token']
         self.pre_pipeline(input_dict)
-        example = self.pipeline(input_dict)
+        example = self.pipeline(input_dict) 
 
         assert example['gt_labels_3d'].data.shape[0] == example['gt_fut_traj'].shape[0]
         assert example['gt_labels_3d'].data.shape[0] == example['gt_past_traj'].shape[0]
@@ -275,7 +275,8 @@ class NuScenesE2EDataset(NuScenesDataset):
         gt_sdc_bbox_list = [each['gt_sdc_bbox'].data for each in queue]
         l2g_r_mat_list = [to_tensor(each['l2g_r_mat']) for each in queue]
         l2g_t_list = [to_tensor(each['l2g_t']) for each in queue]
-        timestamp_list = [to_tensor(each['timestamp']) for each in queue]
+        # timestamp_list = [to_tensor(each['timestamp']) for each in queue]  
+        timestamp_list = [torch.tensor([each["timestamp"]], dtype=torch.float64) for each in queue]  # L, 1
         gt_fut_traj = to_tensor(queue[-1]['gt_fut_traj'])
         gt_fut_traj_mask = to_tensor(queue[-1]['gt_fut_traj_mask'])
         gt_sdc_fut_traj = to_tensor(queue[-1]['gt_sdc_fut_traj'])
@@ -291,7 +292,7 @@ class NuScenesE2EDataset(NuScenesDataset):
             metas_map[i] = each['img_metas'].data
             if i == 0:
                 metas_map[i]['prev_bev'] = False
-                prev_pos = copy.deepcopy(metas_map[i]['can_bus'][:3])
+                prev_pos = copy.deepcopy(metas_map[i]['can_bus'][:3])  
                 prev_angle = copy.deepcopy(metas_map[i]['can_bus'][-1])
                 metas_map[i]['can_bus'][:3] = 0
                 metas_map[i]['can_bus'][-1] = 0
@@ -348,7 +349,7 @@ class NuScenesE2EDataset(NuScenesDataset):
             mask = info['valid_flag']
         else:
             mask = info['num_lidar_pts'] > 0
-        gt_bboxes_3d = info['gt_boxes'][mask]
+        gt_bboxes_3d = info['gt_boxes'][mask] 
         gt_names_3d = info['gt_names'][mask]
         gt_inds = info['gt_inds'][mask]
 
@@ -360,7 +361,7 @@ class NuScenesE2EDataset(NuScenesDataset):
             info['token'], ann_tokens)
 
         sdc_vel = self.traj_api.sdc_vel_info[info['token']]
-        gt_sdc_bbox, gt_sdc_label = self.traj_api.generate_sdc_info(sdc_vel)
+        gt_sdc_bbox, gt_sdc_label = self.traj_api.generate_sdc_info(sdc_vel) 
         gt_sdc_fut_traj, gt_sdc_fut_traj_mask = self.traj_api.get_sdc_traj_label(
             info['token'])
 
@@ -403,7 +404,7 @@ class NuScenesE2EDataset(NuScenesDataset):
             gt_sdc_fut_traj_mask=gt_sdc_fut_traj_mask,
             sdc_planning=sdc_planning,
             sdc_planning_mask=sdc_planning_mask,
-            command=command,
+            command=command,   # command=0-Right, command=1-Left, command=2-Forward
         )
         assert gt_fut_traj.shape[0] == gt_labels_3d.shape[0]
         assert gt_past_traj.shape[0] == gt_labels_3d.shape[0]
@@ -430,9 +431,9 @@ class NuScenesE2EDataset(NuScenesDataset):
         info = self.data_infos[index]
 
         # semantic format
-        lane_info = self.lane_infos[index] if self.lane_infos else None
+        lane_info = self.lane_infos[index] if self.lane_infos else None 
         # panoptic format
-        location = self.nusc.get('log', self.nusc.get(
+        location = self.nusc.get('log', self.nusc.get(  
             'scene', info['scene_token'])['log_token'])['location']
         vectors = self.vector_map.gen_vectorized_samples(location,
                                                          info['ego2global_translation'],
@@ -443,12 +444,12 @@ class NuScenesE2EDataset(NuScenesDataset):
                                                                                        self.map_num_classes,
                                                                                        self.thickness,
                                                                                        self.angle_class)
-        instance_masks = np.rot90(instance_masks, k=-1, axes=(1, 2))
+        instance_masks = np.rot90(instance_masks, k=-1, axes=(1, 2)) 
         instance_masks = torch.tensor(instance_masks.copy())
         gt_labels = []
         gt_bboxes = []
         gt_masks = []
-        for cls in range(self.map_num_classes):
+        for cls in range(self.map_num_classes):  
             for i in np.unique(instance_masks[cls]):
                 if i == 0:
                     continue
@@ -476,7 +477,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         gt_labels = torch.tensor(gt_labels)
         gt_bboxes = torch.tensor(np.stack(gt_bboxes))
         gt_masks = torch.stack(gt_masks)
-
         # standard protocal modified from SECOND.Pytorch
         input_dict = dict(
             sample_idx=info['token'],
@@ -503,8 +503,8 @@ class NuScenesE2EDataset(NuScenesDataset):
         l2e_r_mat = Quaternion(l2e_r).rotation_matrix
         e2g_r_mat = Quaternion(e2g_r).rotation_matrix
 
-        l2g_r_mat = l2e_r_mat.T @ e2g_r_mat.T
-        l2g_t = l2e_t @ e2g_r_mat.T + e2g_t
+        l2g_r_mat = l2e_r_mat.T @ e2g_r_mat.T   # lidar to global rotation matrix
+        l2g_t = l2e_t @ e2g_r_mat.T + e2g_t     # lidar to global translation matrix
 
         input_dict.update(
             dict(
@@ -542,7 +542,7 @@ class NuScenesE2EDataset(NuScenesDataset):
                     lidar2cam=lidar2cam_rts,
                 ))
 
-        # if not self.test_mode:
+        # if not self.test_mode: 
         annos = self.get_ann_info(index)
         input_dict['ann_info'] = annos
         if 'sdc_planning' in input_dict['ann_info'].keys():
@@ -550,7 +550,7 @@ class NuScenesE2EDataset(NuScenesDataset):
             input_dict['sdc_planning_mask'] = input_dict['ann_info']['sdc_planning_mask']
             input_dict['command'] = input_dict['ann_info']['command']
 
-        rotation = Quaternion(input_dict['ego2global_rotation'])
+        rotation = Quaternion(input_dict['ego2global_rotation']) 
         translation = input_dict['ego2global_translation']
         can_bus = input_dict['can_bus']
         can_bus[:3] = translation
@@ -562,33 +562,37 @@ class NuScenesE2EDataset(NuScenesDataset):
         can_bus[-2] = patch_angle / 180 * np.pi
         can_bus[-1] = patch_angle
 
-        # TODO: Warp all those below occupancy-related codes into a function
-        prev_indices, future_indices = self.occ_get_temporal_indices(
-            index, self.occ_receptive_field, self.occ_n_future)
+        # TODO: Warp all those below occupancy-related codes into a function [Done]
+        all_frames, has_invalid_frame, occ_transforms, occ_future_ann_infos = \
+            self.get_occ_data_infos(index)
 
-        # ego motions of all frames are needed
-        all_frames = prev_indices + [index] + future_indices
-
-        # whether invalid frames is present
-        # 
-        has_invalid_frame = -1 in all_frames[:self.occ_only_total_frames]
         # NOTE: This can only represent 7 frames in total as it influence evaluation
         input_dict['occ_has_invalid_frame'] = has_invalid_frame
         input_dict['occ_img_is_valid'] = np.array(all_frames) >= 0
-
-        # might have None if not in the same sequence
+        input_dict.update(occ_transforms)
+        
+        # for (current and) future frames, detection labels are needed
+        # generate detection labels for current + future frames
+        input_dict['occ_future_ann_infos'] = occ_future_ann_infos
+            
+        return input_dict
+    
+    def get_occ_data_infos(self, index):
+        prev_indices, future_indices = self.occ_get_temporal_indices(
+            index, self.occ_receptive_field, self.occ_n_future)
+        # ego motions of all frames are needed
+        all_frames = prev_indices + [index] + future_indices
+        # whether invalid frames is present
+        # 
+        has_invalid_frame = -1 in all_frames[:self.occ_only_total_frames]
+                # might have None if not in the same sequence
         future_frames = [index] + future_indices
-
         # get lidar to ego to global transforms for each curr and fut index
         occ_transforms = self.occ_get_transforms(
             future_frames)  # might have None
-        input_dict.update(occ_transforms)
-
-        # for (current and) future frames, detection labels are needed
-        # generate detection labels for current + future frames
-        input_dict['occ_future_ann_infos'] = \
-            self.get_future_detection_infos(future_frames)
-        return input_dict
+        
+        occ_future_ann_infos = self.get_future_detection_infos(future_frames)
+        return all_frames, has_invalid_frame, occ_transforms, occ_future_ann_infos
 
     def get_future_detection_infos(self, future_frames):
         detection_ann_infos = []

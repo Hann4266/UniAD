@@ -102,7 +102,10 @@ class AgentPredictionData:
         self.pred_label = pred_label
         self.pred_center = pred_center
         self.pred_dim = pred_dim
-        # TODO(box3d): we have changed yaw to mmdet3d 1.0.0rc6 format, maybe we should change this. [DONE]
+        temp = pred_dim.copy()
+        self.pred_dim[0] = temp[1]  # NOTE: we fixed the box dim, form lwh to wlh for adapting the nuScenes visualize tools.
+        self.pred_dim[1] = temp[0]
+        # NOTE: we have changed yaw to mmdet3d 1.0.0rc6 format, maybe we should change this. 
         self.pred_yaw = pred_yaw
         self.pred_vel = pred_vel
         self.pred_traj = pred_traj

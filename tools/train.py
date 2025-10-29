@@ -49,7 +49,7 @@ def parse_args():
         nargs='+',
         help='ids of gpus to use '
         '(only applicable to non-distributed training)')
-    parser.add_argument('--seed', type=int, default=0, help='random seed')
+    parser.add_argument('--seed', type=int, default=0, help='random seed') 
     parser.add_argument(
         '--deterministic',
         action='store_true',
@@ -76,14 +76,14 @@ def parse_args():
         choices=['none', 'pytorch', 'slurm', 'mpi'],
         default='none',
         help='job launcher')
-    # parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--local_rank', type=int, default=0)
     parser.add_argument(
         '--autoscale-lr',
         action='store_true',
         help='automatically scale lr with the number of gpus')
     args = parser.parse_args()
-    # if 'LOCAL_RANK' not in os.environ:
-    #     os.environ['LOCAL_RANK'] = str(args.local_rank)
+    if 'LOCAL_RANK' not in os.environ:
+        os.environ['LOCAL_RANK'] = str(args.local_rank)
 
     if args.options and args.cfg_options:
         raise ValueError(
@@ -176,11 +176,8 @@ def main():
     log_file = osp.join(cfg.work_dir, f'{timestamp}.log')
     # specify logger name, if we still use 'mmdet', the output info will be
     # filtered and won't be saved in the log_file
-    # TODO: ugly workaround to judge whether we are training det or seg model
-    if cfg.model.type in ['EncoderDecoder3D']:
-        logger_name = 'mmseg'
-    else:
-        logger_name = 'mmdet'
+    # NOTE: We have adopted a more elegant way to set the logger_name
+    logger_name = cfg.get('logger_name', 'mmdet')
     logger = get_root_logger(
         log_file=log_file, log_level=cfg.log_level, name=logger_name)
 
@@ -253,4 +250,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # NOTE: To fix the serialization issue in nuScenes-dev-kit, we adopt this method to skip the pickle steps
+    torch.multiprocessing.set_start_method('fork')
     main()

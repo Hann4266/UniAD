@@ -94,16 +94,16 @@ def anchor_coordinate_transform(anchors, bbox_results, with_translation_transfor
     for i in range(batch_size):
         bboxes, scores, labels, bbox_index, mask = bbox_results[i]
         yaw = bboxes.yaw.to(transformed_anchors.device)
-        bbox_centers = bboxes.gravity_center.to(transformed_anchors.device)
-        if with_rotation_transform: 
-            # TODO(box3d): we have changed yaw to mmdet3d 1.0.0rc6 format, maybe we should change this.
-            angle = yaw - 3.1415953 # num_agents, 1
-            rot_yaw = rot_2d(angle) # num_agents, 2, 2
+        bbox_centers = bboxes.gravity_center.to(transformed_anchors.device) 
+        if with_rotation_transform:
+            # NOTE: we have changed yaw to mmdet3d 1.0.0rc6 format, maybe we should change this.
+            angle = yaw
+            rot_yaw = rot_2d(angle) # num_agents, 2, 2 
             rot_yaw = rot_yaw[:, None, None,:, :] # num_agents, 1, 1, 2, 2
             transformed_anchors = rearrange(transformed_anchors, 'b g m t c -> b g m c t')  # 1, num_groups, num_modes, 12, 2 -> 1, num_groups, num_modes, 2, 12
             transformed_anchors = torch.matmul(rot_yaw, transformed_anchors)# -> num_agents, num_groups, num_modes, 12, 2
             transformed_anchors = rearrange(transformed_anchors, 'b g m c t -> b g m t c')
-        if with_translation_transform:
+        if with_translation_transform:  
             transformed_anchors = bbox_centers[:, None, None, None, :2] + transformed_anchors
         batched_anchors.append(transformed_anchors)
     return torch.stack(batched_anchors)
@@ -130,8 +130,8 @@ def trajectory_coordinate_transform(trajectory, bbox_results, with_translation_t
         transformed_trajectory = trajectory[i,...]
         if with_rotation_transform:
             # we take negtive here, to reverse the trajectory back to ego centric coordinate
-            # TODO(box3d): we have changed yaw to mmdet3d 1.0.0rc6 format, maybe we should change this.
-            angle = -(yaw - 3.1415953) 
+            # NOTE: we have changed yaw to mmdet3d 1.0.0rc6 format, maybe we should change this.
+            angle = -yaw  
             rot_yaw = rot_2d(angle)
             rot_yaw = rot_yaw[:,None, None,:, :] # A, 1, 1, 2, 2
             transformed_trajectory = rearrange(transformed_trajectory, 'a g p t c -> a g p c t') # A, G, P, 12 ,2 -> # A, G, P, 2, 12

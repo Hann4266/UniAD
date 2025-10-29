@@ -150,3 +150,9 @@ debug/
 *projs/
 
 core.*
+
+# mmcv package
+mmcv
+
+# vscode config file
+.vscode/

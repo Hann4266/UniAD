@@ -252,7 +252,7 @@ class MotionHead(BaseMotionHead):
         learnable_query_pos = self.learnable_motion_query_embedding.weight.to(dtype)  # latent anchor (P*G, D)
         learnable_query_pos = torch.stack(torch.split(learnable_query_pos, self.num_anchor, dim=0))
 
-        # construct the agent level/scene-level query positional embedding 
+        # construct the agent level/scene-level query positional embedding
         # (num_groups, num_anchor, 12, 2)
         # to incorporate the information of different groups and coordinates, and embed the headding and location information
         agent_level_anchors = self.kmeans_anchors.to(dtype).to(device).view(num_groups, self.num_anchor, self.predict_steps, 2).detach()
@@ -261,7 +261,7 @@ class MotionHead(BaseMotionHead):
 
         agent_level_norm = norm_points(agent_level_anchors, self.pc_range)
         scene_level_ego_norm = norm_points(scene_level_ego_anchors, self.pc_range)
-        scene_level_offset_norm = norm_points(scene_level_offset_anchors, self.pc_range)
+        scene_level_offset_norm = norm_points(scene_level_offset_anchors, self.pc_range) 
 
         # we only use the last point of the anchor
         agent_level_embedding = self.agent_level_embedding_layer(
@@ -472,9 +472,12 @@ class MotionHead(BaseMotionHead):
             matched_gt_fut_traj_mask = gt_fut_traj_mask[i][matched_gt_idx][valid_traj_masks]
             if self.use_nonlinear_optimizer:
                 # TODO: sdc query is not supported non-linear optimizer
-                bboxes = track_bbox_results[i][0].tensor[valid_traj_masks]
-                matched_gt_bboxes_3d = gt_bboxes_3d[i][-1].tensor[matched_gt_idx[:-1]
-                                                                  ][valid_traj_masks[:-1]]
+                # bboxes = track_bbox_results[i][0].tensor[valid_traj_masks]
+                bboxes = track_bbox_results[i][0].tensor[:len(valid_traj_masks)].to(valid_traj_masks.device)[valid_traj_masks]
+                matched_tensor = gt_bboxes_3d[i][-1].tensor
+                matched_indices = matched_gt_idx[:-1]
+                valid_masks = valid_traj_masks[:-1]
+                matched_gt_bboxes_3d = matched_tensor.to(valid_masks.device)[matched_indices.to(valid_masks.device)][valid_masks]
                 sdc_gt_fut_traj = matched_gt_fut_traj[-1:]
                 sdc_gt_fut_traj_mask = matched_gt_fut_traj_mask[-1:]
                 matched_gt_fut_traj = matched_gt_fut_traj[:-1]

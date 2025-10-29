@@ -104,9 +104,8 @@ class DETRTrack3DCoder(BaseBBoxCoder):
                 mask = torch.ones_like(mask) > 0
             if self.with_nms:
                 mask &= nms_mask
-
             boxes3d = final_box_preds[mask]
-            scores = final_scores[mask]
+            scores = final_scores[mask]  
             labels = final_preds[mask]
             track_scores = track_scores[mask]
             obj_idxes = obj_idxes[mask]
