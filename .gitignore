@@ -150,3 +150,5 @@ debug/
 *projs/
 
 core.*
+# Weights & Biases
+wandb/
