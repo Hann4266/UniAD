@@ -251,5 +251,8 @@ def main():
 
 if __name__ == '__main__':
     # NOTE: To fix the serialization issue in nuScenes-dev-kit, we adopt this method to skip the pickle steps
-    torch.multiprocessing.set_start_method('fork')
+    try:
+        torch.multiprocessing.set_start_method('fork')
+    except RuntimeError:
+        pass  # already set by torch.distributed.run
     main()

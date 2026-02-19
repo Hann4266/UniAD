@@ -267,7 +267,7 @@ class UniADTrack(MVXTwoStageDetector):
 
         ref_pts = reference_points @ l2g_r1 + l2g_t1 - l2g_t2
 
-        g2l_r = torch.linalg.inv(l2g_r2).type(torch.float)
+        g2l_r = torch.linalg.inv(l2g_r2.cpu()).type(torch.float).to(l2g_r2.device)
 
         ref_pts = ref_pts @ g2l_r
 
@@ -459,7 +459,7 @@ class UniADTrack(MVXTwoStageDetector):
         
         active_index = (track_instances.obj_idxes>=0) & (track_instances.iou >= self.gt_iou_threshold) & (track_instances.matched_gt_idxes >=0)
         out.update(self.select_active_track_query(track_instances, active_index, img_metas))
-        out.update(self.select_sdc_track_query(track_instances[900], img_metas))
+        out.update(self.select_sdc_track_query(track_instances[self.num_query], img_metas))
         
         # memory bank 
         if self.memory_bank is not None:
@@ -681,8 +681,8 @@ class UniADTrack(MVXTwoStageDetector):
         track_instances.pred_boxes = output_coords[-1, 0]  # [300, box_dim]
         track_instances.output_embedding = query_feats[-1][0]  # [300, feat_dim]
         track_instances.ref_pts = last_ref_pts[0]
-        # hard_code: assume the 901 query is sdc query 
-        track_instances.obj_idxes[900] = -2
+        # sdc query is the last query (at index num_query)
+        track_instances.obj_idxes[self.num_query] = -2
         """ update track base """
         self.track_base.update(track_instances, None)
        

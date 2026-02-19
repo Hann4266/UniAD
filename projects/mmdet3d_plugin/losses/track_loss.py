@@ -364,11 +364,12 @@ class ClipMatcher(nn.Module):
         track_instances: Instances = outputs_without_aux["track_instances"]
         pred_logits_i = track_instances.pred_logits
         pred_boxes_i = track_instances.pred_boxes
-        # modified the hard code, 900:901, sdc query
-        pred_sdc_logits_i = track_instances.pred_logits[900:901].unsqueeze(0) 
-        pred_sdc_boxes_i = track_instances.pred_boxes[900:901].unsqueeze(0) 
+        # sdc query is the last query (index = num_query = total - 1)
+        sdc_idx = pred_logits_i.shape[0] - 1
+        pred_sdc_logits_i = track_instances.pred_logits[sdc_idx:sdc_idx+1].unsqueeze(0) 
+        pred_sdc_boxes_i = track_instances.pred_boxes[sdc_idx:sdc_idx+1].unsqueeze(0) 
         # -2 means the sdc query in this code
-        track_instances.obj_idxes[900]=-2
+        track_instances.obj_idxes[sdc_idx]=-2
         pred_past_trajs_i = track_instances.pred_past_trajs  # predicted past trajs of i-th image.
 
         obj_idxes = gt_instances_i.obj_ids

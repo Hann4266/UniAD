@@ -156,3 +156,15 @@ mmcv
 
 # vscode config file
 .vscode/
+
+# Images and visualizations
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.webp
+vis_predictions_v2/
+viz_loki_gt_2d/
+viz_loki_gt_filtered/

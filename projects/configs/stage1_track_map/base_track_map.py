@@ -382,7 +382,7 @@ train_pipeline = [
     ),
 
     dict(type='GenerateOccFlowLabels', grid_conf=occflow_grid_conf, ignore_index=255, only_vehicle=True, 
-                                    filter_invisible=False),  # NOTE: Currently vis_token is not in pkl 
+                                    filter_invisible=False),  # NOTE: Currently vis_token is not in pkl 有可能用不到 check
 
     dict(type="ObjectRangeFilterTrack", point_cloud_range=point_cloud_range),
     dict(type="ObjectNameFilterTrack", classes=class_names),
