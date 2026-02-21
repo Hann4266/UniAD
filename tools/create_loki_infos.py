@@ -23,6 +23,7 @@ from pathlib import Path
 from collections import defaultdict
 import re
 import io
+from plyfile import PlyData
 
 
 # --------------------------------------------------------------------- #
@@ -157,6 +158,44 @@ def get_frame_data_availability(scenario_dir, frame_idx):
         'odom': os.path.exists(os.path.join(scenario_dir, f"odom_{fid}.txt")),
         'pc': os.path.exists(os.path.join(scenario_dir, f"pc_{fid}.ply")),
     }
+
+
+def load_lidar_points(ply_path):
+    """Load LiDAR point cloud from PLY file → (N, 3) xyz array."""
+    ply = PlyData.read(ply_path)
+    v = ply['vertex']
+    return np.column_stack([v['x'], v['y'], v['z']]).astype(np.float64)
+
+
+def count_points_in_boxes(pts, boxes):
+    """Count LiDAR points inside each 3D bounding box.
+
+    Args:
+        pts: (N, 3) LiDAR points [x, y, z].
+        boxes: list of dicts with 'pos' (3,), 'dim' (3,), 'yaw' (float).
+
+    Returns:
+        np.ndarray: (M,) point count per box.
+    """
+    counts = np.zeros(len(boxes), dtype=np.int64)
+    for i, box in enumerate(boxes):
+        cx, cy, cz = box['pos']
+        dx, dy, dz = box['dim']
+        yaw = box['yaw']
+
+        # Translate to box center
+        local = pts - np.array([cx, cy, cz])
+        # Rotate to box-local frame
+        cos_y, sin_y = np.cos(-yaw), np.sin(-yaw)
+        local_x = cos_y * local[:, 0] - sin_y * local[:, 1]
+        local_y = sin_y * local[:, 0] + cos_y * local[:, 1]
+        local_z = local[:, 2]
+        # Check inside box
+        inside = ((np.abs(local_x) <= dx / 2) &
+                  (np.abs(local_y) <= dy / 2) &
+                  (np.abs(local_z) <= dz / 2))
+        counts[i] = inside.sum()
+    return counts
 
 
 def process_scenario(scenario_dir, scenario_name, global_track_id_map):
@@ -320,6 +359,20 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
         # Timestamp: use frame index / fps as seconds
         timestamp = float(fidx) / 2.0 / fps  # convert frame step to seconds
 
+        # LiDAR point cloud path
+        pc_path = os.path.join(scenario_dir, f"pc_{fid_str}.ply")
+
+        # Compute real num_lidar_pts per GT box
+        if avail['pc'] and n_obj > 0:
+            lidar_pts = load_lidar_points(pc_path)
+            box_dicts = [
+                dict(pos=anns[j]['pos'], dim=anns[j]['dim'], yaw=anns[j]['yaw'])
+                for j in range(n_obj)
+            ]
+            num_lidar_pts = count_points_in_boxes(lidar_pts, box_dicts)
+        else:
+            num_lidar_pts = np.zeros(n_obj, dtype=np.int64)
+
         info = dict(
             # Identity
             scenario=scenario_name,
@@ -330,6 +383,7 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
 
             # Paths
             img_filename=img_path,
+            pts_filename=pc_path if avail['pc'] else '',
 
             # Ego transforms
             lidar2ego_rotation=l2e_r,
@@ -352,9 +406,9 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             gt_inds=gt_inds,
             gt_velocity=gt_velocity.astype(np.float32),
 
-            # Validity (all are valid since we check image exists)
-            valid_flag=np.ones(n_obj, dtype=bool),
-            num_lidar_pts=np.ones(n_obj, dtype=np.int64) * 100,
+            # Validity based on real LiDAR point counts
+            valid_flag=num_lidar_pts > 0 if n_obj > 0 else np.ones(0, dtype=bool),
+            num_lidar_pts=num_lidar_pts,
         )
         frame_infos.append(info)
 

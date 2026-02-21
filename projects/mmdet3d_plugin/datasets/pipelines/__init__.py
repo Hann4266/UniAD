@@ -7,13 +7,15 @@ from .loading import LoadAnnotations3D_E2E  # TODO: remove LoadAnnotations3D_E2E
 from .occflow_label import GenerateOccFlowLabels
 from .loki_loading import (
     LoadLokiImage, LoadLokiAnnotations3D,
-    LokiFormatBundle3D, GenerateDummyOccLabels)
+    LokiFormatBundle3D, GenerateDummyOccLabels,
+    LoadLokiLiDARDepth)
 
 __all__ = [
-    'PadMultiViewImage', 'NormalizeMultiviewImage', 
+    'PadMultiViewImage', 'NormalizeMultiviewImage',
     'PhotoMetricDistortionMultiViewImage', 'CustomDefaultFormatBundle3D', 'CustomCollect3D', 'RandomScaleImageMultiViewImage',
     'ObjectRangeFilterTrack', 'ObjectNameFilterTrack', 'ObjectFOVFilterTrack',
     'LoadAnnotations3D_E2E', 'GenerateOccFlowLabels',
     'LoadLokiImage', 'LoadLokiAnnotations3D',
     'LokiFormatBundle3D', 'GenerateDummyOccLabels',
+    'LoadLokiLiDARDepth',
 ]

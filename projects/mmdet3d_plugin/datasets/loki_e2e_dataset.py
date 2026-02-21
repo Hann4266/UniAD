@@ -375,6 +375,7 @@ class LokiE2EDataset(Custom3DDataset):
             gt_lane_labels=gt_lane_labels,
             gt_lane_bboxes=gt_lane_bboxes,
             gt_lane_masks=gt_lane_masks,
+            pts_filename=info.get('pts_filename', ''),
         )
 
         # l2g_t is in global frame, unchanged by lidar rotation
@@ -628,6 +629,15 @@ class LokiE2EDataset(Custom3DDataset):
         queue['gt_past_traj_mask'] = DC(gt_past_traj_mask_list)
         queue['gt_future_boxes'] = DC(gt_future_boxes_list, cpu_only=True)
         queue['gt_future_labels'] = DC(gt_future_labels_list)
+
+        # Preserve gt_depth from the last frame (for LiDAR depth supervision)
+        if 'gt_depth' in queue:
+            import torch
+            gt_depth = queue['gt_depth']
+            if not isinstance(gt_depth, torch.Tensor):
+                gt_depth = torch.from_numpy(gt_depth).float()
+            queue['gt_depth'] = gt_depth
+
         return queue
 
     # ------------------------------------------------------------------ #

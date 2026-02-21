@@ -25,7 +25,7 @@ class UniADTrack(MVXTwoStageDetector):
     """UniAD tracking part
     """
     def __init__(
-        self, 
+        self,
         use_grid_mask=False,
         img_backbone=None,
         img_neck=None,
@@ -71,6 +71,7 @@ class UniADTrack(MVXTwoStageDetector):
         freeze_bn=False,
         freeze_bev_encoder=False,
         queue_length=3,
+        depth_sup_cfg=None,
     ):
         super(UniADTrack, self).__init__(
             img_backbone=img_backbone,
@@ -148,6 +149,13 @@ class UniADTrack(MVXTwoStageDetector):
         self.l2g_t = None
         self.gt_iou_threshold = gt_iou_threshold
         self.bev_h, self.bev_w = self.pts_bbox_head.bev_h, self.pts_bbox_head.bev_w
+
+        # Optional LiDAR depth supervision
+        self.depth_net = None
+        self._cached_img_feats = None
+        if depth_sup_cfg is not None:
+            from ..modules.depth_net import DepthNet
+            self.depth_net = DepthNet(**depth_sup_cfg)
         self.freeze_bev_encoder = freeze_bev_encoder
 
     def extract_img_feat(self, img, len_queue=None):
@@ -164,6 +172,10 @@ class UniADTrack(MVXTwoStageDetector):
             img_feats = list(img_feats.values())
         if self.with_img_neck:
             img_feats = self.img_neck(img_feats)
+
+        # Cache raw FPN features for depth supervision (before reshape)
+        if self.depth_net is not None and self.training:
+            self._cached_img_feats = img_feats[0]  # level 0, (B*N, C, H, W)
 
         img_feats_reshaped = []
         for img_feat in img_feats:
@@ -502,7 +514,8 @@ class UniADTrack(MVXTwoStageDetector):
                             l2g_t,
                             l2g_r_mat,
                             img_metas,
-                            timestamp):
+                            timestamp,
+                            gt_depth=None):
         """Forward funciton
         Args:
         Returns:
@@ -575,8 +588,16 @@ class UniADTrack(MVXTwoStageDetector):
                     "track_query_embeddings", "track_query_matched_idxes", "track_bbox_results",
                     "sdc_boxes_3d", "sdc_scores_3d", "sdc_track_scores", "sdc_track_bbox_results", "sdc_embedding"]
         out.update({k: frame_res[k] for k in get_keys})
-        
+
         losses = self.criterion.losses_dict
+
+        # Depth supervision: predict depth from cached FPN features of last frame
+        if self.depth_net is not None and self._cached_img_feats is not None and gt_depth is not None:
+            depth_logits = self.depth_net(self._cached_img_feats)
+            depth_losses = self.depth_net.loss(depth_logits, gt_depth)
+            losses.update(depth_losses)
+            self._cached_img_feats = None  # free memory
+
         return losses, out
 
     def upsample_bev_if_tiny(self, outs_track):

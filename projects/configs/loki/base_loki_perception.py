@@ -100,6 +100,16 @@ model = dict(
     num_classes=num_classes,
     vehicle_id_list=vehicle_id_list,
     pc_range=point_cloud_range,
+    # LiDAR depth supervision (auxiliary loss on FPN features)
+    depth_sup_cfg=dict(
+        in_channels=256,
+        mid_channels=256,
+        num_bins=60,
+        depth_min=1.0,
+        depth_max=61.0,
+        loss_weight=3.0,
+        downsample=16,
+    ),
     img_backbone=dict(
         type="ResNet",
         depth=101,
@@ -292,6 +302,8 @@ train_pipeline = [
     # LOKI-specific: single camera, corrupt image handling, resize
     dict(type="LoadLokiImage", to_float32=True,
          target_size=(1600, 900)),
+    # LiDAR depth supervision: project point cloud to camera for depth GT
+    dict(type="LoadLokiLiDARDepth", depth_min=1.0, depth_max=61.0),
     dict(type="PhotoMetricDistortionMultiViewImage"),
     # Use standard NuScenes annotation loader (pops gt_inds from ann_info)
     dict(type="LoadAnnotations3D_E2E",
@@ -350,6 +362,8 @@ train_pipeline = [
              "sdc_planning",
              "sdc_planning_mask",
              "command",
+             # LiDAR depth supervision
+             "gt_depth",
          ]),
 ]
 

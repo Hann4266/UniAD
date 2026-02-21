@@ -52,13 +52,44 @@ LOKI has a single front camera with 60° horizontal FOV. GT annotations in the p
 ### Data
 - `data/infos/loki_infos_train.pkl`, `data/infos/loki_infos_val.pkl` — Pre-computed info dicts
 - Raw images at `/mnt/storage/loki_data/scenario_XXX/image_XXXX.png`
-- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation`
+- Pkl info keys: `token, scene_token, frame_idx, img_filename, pts_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation`
+- `pts_filename`: path to PLY point cloud; `num_lidar_pts`: real count of LiDAR points per GT box; `valid_flag`: `num_lidar_pts > 0`
 - `gt_boxes` shape: (N, 9) = [x, y, z, l, w, h, yaw, vx, vy]
 
 ### Training Outputs
 - `work_dirs/base_loki_perception/` — Checkpoints (epoch_1-6.pth), results_epoch6.pkl, tensorboard logs
 - Results pkl structure: `{'bbox_results': [{'token', 'boxes_3d', 'scores_3d', 'labels_3d', 'track_scores', 'track_ids', 'boxes_3d_det', 'scores_3d_det', 'labels_3d_det', 'track_bbox_results'}, ...]}`
 - Results from epoch 6 are in the OLD coordinate system (before rotation was added)
+
+## LiDAR Depth Supervision
+LOKI has synchronized LiDAR point clouds (`pc_XXXX.ply`, ~232K pts/frame, PLY format with x,y,z,intensity).
+
+### How it works
+1. `create_loki_infos.py` stores `pts_filename` (path to PLY) and real `num_lidar_pts` per GT box (used for `valid_flag`)
+2. `LoadLokiLiDARDepth` pipeline transform: loads PLY, projects to camera image using original lidar2cam + scaled intrinsics → sparse depth map `gt_depth` (H, W)
+3. `DepthNet` module (`uniad/modules/depth_net.py`): Conv2d head on FPN level 0 features → categorical depth bins (60 bins, 1-61m)
+4. Binary cross-entropy loss between predicted depth distribution and one-hot LiDAR depth, masked to valid pixels only
+
+### Data flow
+- Pipeline: `LoadLokiImage` → `LoadLokiLiDARDepth` → ... → `CustomCollect3D` (includes `gt_depth`)
+- Dataset: `union2one` preserves `gt_depth` from last frame in queue
+- Model: `UniAD.forward_train` passes `gt_depth` → `forward_track_train` → depth loss computed on cached FPN features after tracking loop
+
+### Files modified
+- `tools/create_loki_infos.py` — `pts_filename`, real `num_lidar_pts`, `valid_flag` from point counts
+- `projects/mmdet3d_plugin/datasets/pipelines/loki_loading.py` — `LoadLokiLiDARDepth`
+- `projects/mmdet3d_plugin/datasets/pipelines/__init__.py` — export
+- `projects/mmdet3d_plugin/uniad/modules/depth_net.py` — `DepthNet` categorical depth head
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_track.py` — `depth_sup_cfg`, cached FPN feats, depth loss
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — passes `gt_depth` to track training
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `pts_filename` in `get_data_info`, `gt_depth` in `union2one`
+- `projects/configs/loki/base_loki_perception.py` — `depth_sup_cfg`, pipeline, collect keys
+
+### Regenerating pkl (required before training)
+```bash
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_infos.py \
+    --data-root /mnt/storage/loki_data --out-dir data/infos
+```
 
 ## LOKI vs nuScenes Differences
 1. Single camera (not 6) — 60° horizontal FOV

@@ -160,8 +160,9 @@ class UniAD(UniADTrack):
         len_queue = img.size(1)
         
 
+        gt_depth = kwargs.get('gt_depth', None)
         losses_track, outs_track = self.forward_track_train(img, gt_bboxes_3d, gt_labels_3d, gt_past_traj, gt_past_traj_mask, gt_inds, gt_sdc_bbox, gt_sdc_label,
-                                                        l2g_t, l2g_r_mat, img_metas, timestamp)
+                                                        l2g_t, l2g_r_mat, img_metas, timestamp, gt_depth=gt_depth)
         losses_track = self.loss_weighted_and_prefixed(losses_track, prefix='track')
         losses.update(losses_track)
         

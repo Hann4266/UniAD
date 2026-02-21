@@ -207,6 +207,98 @@ class LokiFormatBundle3D(object):
 
 
 @PIPELINES.register_module()
+class LoadLokiLiDARDepth(object):
+    """Generate a sparse depth map by projecting LiDAR points to the camera.
+
+    Reads the PLY point cloud (in the ORIGINAL LOKI ego frame), projects
+    onto the (resized) camera image using the original lidar→camera
+    transform and scaled intrinsics, and stores a float32 depth map.
+
+    The depth map has shape (H, W) where H, W match the training image
+    size.  Pixels without LiDAR returns are zero.
+
+    Must be placed AFTER LoadLokiImage (which sets img_shape and scales
+    cam_intrinsic) and BEFORE NormalizeMultiviewImage.
+
+    Args:
+        depth_min (float): Minimum valid depth in metres. Default: 1.0.
+        depth_max (float): Maximum valid depth in metres. Default: 61.0.
+    """
+
+    # Original LOKI ego→camera rotation (constant, not affected by 90° BEV rotation)
+    LIDAR2CAM_ORIG = np.array([
+        [0.0, -1.0,  0.0, 0.0],
+        [0.0,  0.0, -1.0, 0.0],
+        [1.0,  0.0,  0.0, 0.0],
+        [0.0,  0.0,  0.0, 1.0],
+    ], dtype=np.float64)
+
+    def __init__(self, depth_min=1.0, depth_max=61.0):
+        self.depth_min = depth_min
+        self.depth_max = depth_max
+
+    def __call__(self, results):
+        pts_filename = results.get('pts_filename', '')
+        if not pts_filename:
+            # No LiDAR available — return zero depth
+            H, W = results['img_shape'][0][:2]
+            results['gt_depth'] = np.zeros((H, W), dtype=np.float32)
+            return results
+
+        try:
+            from plyfile import PlyData
+            ply = PlyData.read(pts_filename)
+            v = ply['vertex']
+            pts = np.column_stack([v['x'], v['y'], v['z']]).astype(np.float64)
+        except Exception:
+            H, W = results['img_shape'][0][:2]
+            results['gt_depth'] = np.zeros((H, W), dtype=np.float32)
+            return results
+
+        # Project: ego → camera → image
+        # cam_intrinsic has already been scaled by LoadLokiImage for the
+        # resized image.  LIDAR2CAM_ORIG is the original ego→camera extrinsic.
+        cam_K = results['cam_intrinsic'][0].astype(np.float64)  # (4, 4) scaled
+        lidar2img_depth = cam_K @ self.LIDAR2CAM_ORIG            # (4, 4)
+
+        # Homogeneous points (N, 4)
+        ones = np.ones((len(pts), 1), dtype=np.float64)
+        pts_h = np.hstack([pts, ones])
+
+        # Project
+        img_pts = (lidar2img_depth @ pts_h.T).T  # (N, 4)
+        depth = img_pts[:, 2]
+
+        # Filter: in front of camera, within depth range
+        valid = (depth > self.depth_min) & (depth < self.depth_max)
+        img_pts = img_pts[valid]
+        depth = depth[valid]
+
+        u = img_pts[:, 0] / depth
+        v = img_pts[:, 1] / depth
+
+        H, W = results['img_shape'][0][:2]
+        in_img = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        u = u[in_img].astype(np.int32)
+        v = v[in_img].astype(np.int32)
+        depth = depth[in_img].astype(np.float32)
+
+        depth_map = np.zeros((H, W), dtype=np.float32)
+        # For overlapping points, keep the closer one
+        for i in range(len(u)):
+            cur = depth_map[v[i], u[i]]
+            if cur == 0 or depth[i] < cur:
+                depth_map[v[i], u[i]] = depth[i]
+
+        results['gt_depth'] = depth_map
+        return results
+
+    def __repr__(self):
+        return (f'{self.__class__.__name__}('
+                f'depth_min={self.depth_min}, depth_max={self.depth_max})')
+
+
+@PIPELINES.register_module()
 class GenerateDummyOccLabels(object):
     """Generate dummy occupancy flow labels for LOKI.
 
