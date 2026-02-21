@@ -289,7 +289,7 @@ model = dict(
 # --------------------------------------------------------------------- #
 dataset_type = "LokiE2EDataset"
 data_root = "/mnt/storage/loki_data/"
-info_root = "data/infos/"
+info_root = "data/infos_lidar/"
 file_client_args = dict(backend="disk")
 ann_file_train = info_root + "loki_infos_train.pkl"
 ann_file_val = info_root + "loki_infos_val.pkl"
