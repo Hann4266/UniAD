@@ -5,20 +5,36 @@ UniAD (Unified Autonomous Driving) adapted to work with the LOKI dataset (single
 
 ## Coordinate Systems
 - **Original LOKI pkl**: x=forward, y=lateral. `point_cloud_range = [0, -51.2, -5, 51.2, 51.2, 3]`
-- **After rotation (current)**: 90° CCW applied in dataset loader to match nuScenes convention (x=lateral, y=forward). `point_cloud_range = [-51.2, 0, -5, 51.2, 51.2, 3]`
+- **After rotation (current)**: 90° CCW applied in dataset loader to match nuScenes convention (x=right, y=forward). `point_cloud_range = [-51.2, 0, -5, 51.2, 51.2, 3]`
 - Rotation applied in `loki_e2e_dataset.py` `get_data_info()` and `get_ann_info()` — NOT in the pkl itself
 - `R_inv` (new→old): `[[0,1,0],[-1,0,0],[0,0,1]]` applied to `lidar2img`, `lidar2cam`, `l2g_r_mat`
 - `can_bus` and `l2g_t` are in global frame — unchanged by rotation. The rotated `l2g_r_mat` handles the conversion in the transformer's BEV shift code.
 
+## FOV Filtering (60° front camera)
+LOKI has a single front camera with 60° horizontal FOV. GT annotations in the pkl include all 360° objects. Without filtering, objects behind/beside the ego are false negatives during training.
+
+### How it works
+- **Rotated frame**: +y = forward, +x = right. Object at (x, y) is in FOV if `y > 0` and `|atan2(x, y)| <= 30°`
+- **Training pipeline**: `ObjectFOVFilterTrack` in `transform_3d.py` filters GT boxes after range/name filters
+- **Evaluation**: `_in_fov()` helper in `loki_e2e_dataset.py` applied symmetrically to all 4 eval builders (GT detection, pred detection, GT tracking, pred tracking)
+- **Impact**: ~57% of GT objects are outside the 60° FOV and get filtered out
+
+### Files modified for FOV filter
+- `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — `ObjectFOVFilterTrack` class
+- `projects/mmdet3d_plugin/datasets/pipelines/__init__.py` — export
+- `projects/configs/loki/base_loki_perception.py` — added to train_pipeline after `ObjectNameFilterTrack`
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `_in_fov()` + filtering in `_build_gt_eval_boxes`, `_build_pred_eval_boxes`, `_build_gt_tracks`, `_build_pred_tracks`
+
 ## Key Files
 
 ### Dataset
-- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — Main dataset class `LokiE2EDataset`. Mirrors `NuScenesE2EDataset` but single-camera. Contains `get_ann_info()`, `get_data_info()`, `prepare_train_data()`, `union2one()`.
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — Main dataset class `LokiE2EDataset`. Mirrors `NuScenesE2EDataset` but single-camera. Contains `get_ann_info()`, `get_data_info()`, `prepare_train_data()`, `union2one()`, and full evaluation pipeline with FOV filtering.
+- `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — Pipeline transforms including `ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`
 - `projects/mmdet3d_plugin/datasets/pipelines/loki_loading.py` — `LoadLokiImage` (single camera, scales lidar2img if resized from 1920x1208), `GenerateDummyOccLabels`
 - `PKL_TO_CONFIG` dict maps lowercase pkl names → capitalized config names (e.g. `'car'→'Car'`)
 
 ### Config
-- `projects/configs/loki/base_loki_perception.py` — Single config file. 8 classes, BEV 200x100 (w x h), ResNet101+DCN backbone.
+- `projects/configs/loki/base_loki_perception.py` — Single config file. 8 classes, BEV 200x100 (w x h), ResNet101+DCN backbone. Train pipeline includes `ObjectFOVFilterTrack(fov_deg=60.0)`.
 - `bev_h_=100, bev_w_=200` → grid_length = (0.512, 0.512)
 
 ### Model
@@ -31,7 +47,7 @@ UniAD (Unified Autonomous Driving) adapted to work with the LOKI dataset (single
 - `tools/train.py` / `tools/test.py` — Standard mmdet3d train/test. Test requires distributed launch (`torchrun`).
 - `tools/create_loki_infos.py` — Generates pkl info files from raw LOKI data.
 - `tools/visualize_predictions.py` — **Primary visualization tool.** Combined camera+BEV per frame. Camera: solid green=GT from `label2d_*.json` (pixel-accurate), dashed colored=pred projected from 3D. BEV: white=GT 3D boxes from pkl, dashed colored=pred 3D boxes with heading arrows. Uses original LOKI frame (x=forward, y=lateral). Requires `--data-root` for label2d JSONs.
-- `tools/visualize_loki_gt.py` — Visualize ground truth only (GT 2D boxes + BEV + projection sanity check).
+- `tools/visualize_loki_gt.py` — Visualize GT with range + FOV filtering. Shows camera view (2D labels with KEPT/FILTERED status) and BEV in rotated frame with 60° FOV cone overlay. Applies 90° CCW rotation to boxes before filtering.
 
 ### Data
 - `data/infos/loki_infos_train.pkl`, `data/infos/loki_infos_val.pkl` — Pre-computed info dicts
@@ -45,20 +61,47 @@ UniAD (Unified Autonomous Driving) adapted to work with the LOKI dataset (single
 - Results from epoch 6 are in the OLD coordinate system (before rotation was added)
 
 ## LOKI vs nuScenes Differences
-1. Single camera (not 6)
+1. Single camera (not 6) — 60° horizontal FOV
 2. Pre-computed transforms in pkl (l2g_r_mat as 3x3 matrix, not quaternion)
 3. Zero-filled trajectories (no trajectory prediction data available)
 4. Dummy occupancy labels
 5. No NuScenes SDK dependency
 6. 8 classes: Pedestrian, Car, Bus, Truck, Van, Motorcyclist, Bicyclist, Other
+7. Dense scenes (~20+ agents per frame on average)
+8. No depth sensor — 3D z values from GPS/IMU are noisy
+
+## Performance Comparison
+### LOKI (epoch 6, pre-FOV-filter, single front camera)
+- mAP: 0.0952, NDS: 0.1628, AMOTA: 0.1007
+
+### nuScenes UniAD reference (6 cameras)
+- mAP: 0.368, AMOTA: 0.349 (UniAD(5) from paper)
+- Front_BEV(3) single-cam variant: mAP: 0.33, AMOTA: 0.328
+
+### Gap analysis
+The ~4x mAP gap vs nuScenes is expected given: single camera (no multi-view), no LiDAR depth, FOV false negatives (now fixed), noisy z GT, dense LOKI scenes. The FOV filter should significantly improve metrics by removing ~57% of invisible GT objects.
 
 ## Train / Eval Commands
 ```bash
-# Train
-./tools/uniad_dist_train.sh projects/configs/loki/base_loki_perception.py 1
+# Train (single GPU)
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -u tools/train.py \
+    projects/configs/loki/base_loki_perception.py \
+    --deterministic \
+    --cfg-options log_config.interval=1
+
+# Train (8 GPU)
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=29500 \
+    tools/train.py projects/configs/loki/base_loki_perception.py \
+    --launcher pytorch --deterministic --cfg-options log_config.interval=1
 
 # Eval (distributed required)
-./tools/uniad_dist_eval.sh projects/configs/loki/base_loki_perception.py work_dirs/base_loki_perception/epoch_6.pth 1
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=28596 \
+    tools/test.py projects/configs/loki/base_loki_perception.py \
+    work_dirs/base_loki_perception/epoch_6.pth \
+    --launcher pytorch --eval bbox \
+    --out work_dirs/base_loki_perception/results.pkl
 
 # Visualize predictions vs GT (camera + BEV)
 python tools/visualize_predictions.py \
@@ -67,7 +110,44 @@ python tools/visualize_predictions.py \
     --data-root  /mnt/storage/loki_data \
     --out-dir    vis_predictions/ \
     --num-frames 20 --score-thresh 0.4
-# Options: --tokens TOKEN1 TOKEN2 ...   --all-frames
+
+# Visualize GT with FOV filter
+python tools/visualize_loki_gt.py \
+    --pkl data/infos/loki_infos_val.pkl \
+    --data-root /mnt/storage/loki_data \
+    --out-dir viz_loki_gt_fov \
+    --num-samples 20 --fov-deg 60
+```
+
+## Evaluation
+
+### Detection Evaluation
+`LokiE2EDataset.evaluate()` in `loki_e2e_dataset.py` computes nuScenes-style detection metrics:
+- Per-class AP at distance thresholds [0.5, 1.0, 2.0, 4.0]m
+- TP errors: ATE (translation), ASE (scale), AOE (orientation), AVE (velocity)
+- mAP, NDS (nuScenes Detection Score, attr_err set to worst since LOKI has no attributes)
+- **FOV filter**: Both GT and predictions are filtered to 60° front-camera FOV before metric computation
+
+Uses nuscenes-devkit algorithms (accumulate, calc_ap, calc_tp) with custom `LokiDetectionConfig` and `LokiDetectionBox` that bypass nuScenes class name assertions.
+
+### Tracking Evaluation
+Same `evaluate()` also runs tracking eval (AMOTA, MOTP, IDS, etc.):
+- Builds GT/pred tracks grouped by (scene, timestamp)
+- GT track IDs from `gt_inds` in pkl; pred track IDs from model `track_ids`
+- Uses nuscenes `TrackingEvaluation` per class with motmetrics
+- Creates `TrackingConfig` with LOKI names (sets global TRACKING_NAMES so TrackingBox accepts them)
+- **FOV filter**: Both GT and pred tracks are filtered to 60° FOV
+
+### Evaluation frame
+Both GT and predictions are compared in the **rotated lidar frame** (the frame the model operates in). GT boxes from pkl are rotated 90° CCW (same transform as `get_ann_info`) before comparison. No global-frame transform is needed since all per-frame comparisons use the same coordinate system.
+
+### Running eval standalone (without distributed test)
+```python
+import pickle
+from projects.mmdet3d_plugin.datasets.loki_e2e_dataset import LokiE2EDataset
+dataset = LokiE2EDataset(ann_file='data/infos/loki_infos_val.pkl', pipeline=None, test_mode=True)
+results = pickle.load(open('work_dirs/base_loki_perception/results.pkl', 'rb'))
+metrics = dataset.evaluate(results)
 ```
 
 ## Visualization Notes

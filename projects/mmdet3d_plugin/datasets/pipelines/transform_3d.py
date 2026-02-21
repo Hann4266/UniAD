@@ -445,6 +445,54 @@ class ObjectNameFilterTrack(object):
         return repr_str
 
 @PIPELINES.register_module()
+class ObjectFOVFilterTrack(object):
+    """Filter GT objects by camera field-of-view angle.
+
+    For single-camera setups (e.g. LOKI), removes GT objects outside the
+    camera's horizontal FOV to avoid false-negative supervision.
+
+    Assumes the rotated lidar frame where +y = forward (camera direction)
+    and +x = right.  An object at (x, y) is kept when:
+        y > 0  AND  |atan2(x, y)| <= fov_deg / 2
+
+    Args:
+        fov_deg (float): Horizontal field of view in degrees (default 60).
+    """
+
+    def __init__(self, fov_deg=60.0):
+        self.half_fov = np.deg2rad(fov_deg / 2.0)
+
+    def __call__(self, input_dict):
+        gt_bboxes_3d = input_dict['gt_bboxes_3d']
+        if len(gt_bboxes_3d) == 0:
+            return input_dict
+
+        # Extract BEV centers (x, y) from the 3D boxes
+        if hasattr(gt_bboxes_3d, 'tensor'):
+            centers = gt_bboxes_3d.tensor[:, :2].numpy()
+        else:
+            centers = np.asarray(gt_bboxes_3d)[:, :2]
+
+        x, y = centers[:, 0], centers[:, 1]
+        angles = np.abs(np.arctan2(x, y))  # angle from +y (forward)
+        mask = (y > 0) & (angles <= self.half_fov)
+
+        input_dict['gt_bboxes_3d'] = gt_bboxes_3d[mask]
+        input_dict['gt_labels_3d'] = input_dict['gt_labels_3d'][mask]
+        input_dict['gt_inds'] = input_dict['gt_inds'][mask]
+        input_dict['gt_fut_traj'] = input_dict['gt_fut_traj'][mask]
+        input_dict['gt_fut_traj_mask'] = input_dict['gt_fut_traj_mask'][mask]
+        input_dict['gt_past_traj'] = input_dict['gt_past_traj'][mask]
+        input_dict['gt_past_traj_mask'] = input_dict['gt_past_traj_mask'][mask]
+        return input_dict
+
+    def __repr__(self):
+        repr_str = self.__class__.__name__
+        repr_str += f'(half_fov={np.rad2deg(self.half_fov)*2:.1f}°)'
+        return repr_str
+
+
+@PIPELINES.register_module()
 class CustomObjectRangeFilter(ObjectRangeFilter):
     def __call__(self, results):
         """Call function to filter objects by the range.

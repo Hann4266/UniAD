@@ -28,6 +28,99 @@ cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distribut
     --eval bbox track \
     --out work_dirs/base_loki_perception/results_epoch6.pkl
 
+### Inference + Detection + Tracking full eval pipeline
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distributed.launch \
+    --nproc_per_node=8 \
+    --master_port=28596 \
+    tools/test.py \
+    projects/configs/loki/base_loki_perception.py \
+    work_dirs/base_loki_perception/epoch_6.pth \
+    --launcher pytorch \
+    --eval bbox \
+    --out work_dirs/base_loki_perception/results_rotated_epoch6.pkl \
+    2>&1 | tee work_dirs/base_loki_perception/eval_rotated_epoch6.log
+
+
+### First Evaluation Result:
+
+======================================================================
+  LOKI Detection Evaluation Results
+======================================================================
+
+Per-class Average Precision:
++--------------+--------+--------+--------+--------+--------+
+|    Class     | d=0.5  | d=1.0  | d=2.0  | d=4.0  |  Mean  |
++--------------+--------+--------+--------+--------+--------+
+|  Pedestrian  | 0.0003 | 0.0356 | 0.1588 | 0.3142 | 0.1272 |
+|     Car      | 0.0136 | 0.0887 | 0.2011 | 0.3337 | 0.1593 |
+|     Bus      | 0.0000 | 0.0000 | 0.0000 | 0.0159 | 0.0040 |
+|    Truck     | 0.0024 | 0.0728 | 0.1896 | 0.3183 | 0.1458 |
+|     Van      | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| Motorcyclist | 0.0462 | 0.1761 | 0.3114 | 0.3801 | 0.2285 |
+|  Bicyclist   | 0.0003 | 0.0441 | 0.1272 | 0.2152 | 0.0967 |
+|    Other     | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
++--------------+--------+--------+--------+--------+--------+
+
+True Positive Errors (lower is better):
++--------------+-----------+-----------+------------+---------+
+|    Class     | trans_err | scale_err | orient_err | vel_err |
++--------------+-----------+-----------+------------+---------+
+|  Pedestrian  |   0.9866  |   0.2577  |   1.0487   |  1.7651 |
+|     Car      |   0.7848  |   0.1928  |   0.2539   |  2.1683 |
+|     Bus      |   1.0576  |   0.2905  |   0.1485   |  2.4158 |
+|    Truck     |   0.8004  |   0.2582  |   0.1223   |  1.6148 |
+|     Van      |   1.0000  |   1.0000  |   1.0000   |  1.0000 |
+| Motorcyclist |   0.6222  |   0.2564  |   0.1238   |  1.6036 |
+|  Bicyclist   |   0.8241  |   0.2181  |   0.5394   |  2.3450 |
+|    Other     |   1.0000  |   1.0000  |   1.0000   |  1.0000 |
++--------------+-----------+-----------+------------+---------+
+
+mAP : 0.0952
+NDS : 0.1628
+mTRANSE: 0.8845
+mSCALEE: 0.4342
+mORIENTE: 0.5296
+mVELE: 1.7391
+======================================================================
+
+
+======================================================================
+  LOKI Tracking Evaluation
+======================================================================
+Accumulating tracking metrics ...
+
+Overall Tracking Metrics:
++--------+----------+
+| Metric |  Value   |
++--------+----------+
+| AMOTA  |  0.1007  |
+| AMOTP  |  1.7496  |
+| RECALL |  0.1737  |
+|  MOTA  |  0.0991  |
+|  MOTP  |  0.9289  |
+|  IDS   | 680.0000 |
+|  FRAG  | 735.0000 |
+|  TID   |  8.4162  |
+|  LGD   | 12.9201  |
++--------+----------+
+
+Per-class Tracking:
++--------------+--------+--------+--------+--------+----------+
+|    Class     | AMOTA  | AMOTP  | RECALL |  MOTA  |   IDS    |
++--------------+--------+--------+--------+--------+----------+
+|  Bicyclist   | 0.0607 | 1.7775 | 0.1194 | 0.0862 | 30.0000  |
+|     Bus      | 0.0000 | 2.0000 | 0.0000 | 0.0000 |   N/A    |
+|     Car      | 0.1520 | 1.6280 | 0.2466 | 0.1395 | 84.0000  |
+| Motorcyclist | 0.2497 | 1.5380 | 0.2925 | 0.2156 |  8.0000  |
+|    Other     |  N/A   |  N/A   |  N/A   |  N/A   |   N/A    |
+|  Pedestrian  | 0.0087 | 1.8894 | 0.1332 | 0.0341 | 546.0000 |
+|    Truck     | 0.1330 | 1.6645 | 0.2507 | 0.1191 | 12.0000  |
+|     Van      |  N/A   |  N/A   |  N/A   |  N/A   |   N/A    |
++--------------+--------+--------+--------+--------+----------+
+======================================================================
+
+{'Pedestrian/AP_d0.5': 0.0002581533394952145, 'Pedestrian/AP_d1.0': 0.03559626159406073, 'Pedestrian/AP_d2.0': 0.15878857657520123, 'Pedestrian/AP_d4.0': 0.31424232350820486, 'Pedestrian/trans_err': 0.9865948738330526, 'Pedestrian/scale_err': 0.25772911009875, 'Pedestrian/orient_err': 1.048721435450146, 'Pedestrian/vel_err': 1.7650855020789418, 'Car/AP_d0.5': 0.013568381013869826, 'Car/AP_d1.0': 0.08870366109851562, 'Car/AP_d2.0': 0.2011114747679404, 'Car/AP_d4.0': 0.333719950330202, 'Car/trans_err': 0.7848297221162005, 'Car/scale_err': 0.19283001930213398, 'Car/orient_err': 0.2538592077161936, 'Car/vel_err': 2.168306664313805, 'Bus/AP_d0.5': 0.0, 'Bus/AP_d1.0': 0.0, 'Bus/AP_d2.0': 0.0, 'Bus/AP_d4.0': 0.015901923812362436, 'Bus/trans_err': 1.057618576074681, 'Bus/scale_err': 0.29051658921562307, 'Bus/orient_err': 0.1484839990288613, 'Bus/vel_err': 2.415760242070436, 'Truck/AP_d0.5': 0.002381417188755745, 'Truck/AP_d1.0': 0.07275395146465274, 'Truck/AP_d2.0': 0.1895848477883309, 'Truck/AP_d4.0': 0.3183180145675947, 'Truck/trans_err': 0.8004201056890857, 'Truck/scale_err': 0.25821621144489615, 'Truck/orient_err': 0.12232085395846029, 'Truck/vel_err': 1.6148242541853015, 'Van/AP_d0.5': 0.0, 'Van/AP_d1.0': 0.0, 'Van/AP_d2.0': 0.0, 'Van/AP_d4.0': 0.0, 'Van/trans_err': 1.0, 'Van/scale_err': 1.0, 'Van/orient_err': 1.0, 'Van/vel_err': 1.0, 'Motorcyclist/AP_d0.5': 0.04615476590498459, 'Motorcyclist/AP_d1.0': 0.17610894531573423, 'Motorcyclist/AP_d2.0': 0.3114294775460295, 'Motorcyclist/AP_d4.0': 0.3801391330477175, 'Motorcyclist/trans_err': 0.6222461534838485, 'Motorcyclist/scale_err': 0.2563817958807943, 'Motorcyclist/orient_err': 0.12383769528432904, 'Motorcyclist/vel_err': 1.6036226051159557, 'Bicyclist/AP_d0.5': 0.0003370408428484704, 'Bicyclist/AP_d1.0': 0.044143486017231275, 'Bicyclist/AP_d2.0': 0.12721779589879412, 'Bicyclist/AP_d4.0': 0.21515569897951298, 'Bicyclist/trans_err': 0.8240786506571932, 'Bicyclist/scale_err': 0.21813824566761175, 'Bicyclist/orient_err': 0.539358058536934, 'Bicyclist/vel_err': 2.344968465916306, 'Other/AP_d0.5': 0.0, 'Other/AP_d1.0': 0.0, 'Other/AP_d2.0': 0.0, 'Other/AP_d4.0': 0.0, 'Other/trans_err': 1.0, 'Other/scale_err': 1.0, 'Other/orient_err': 1.0, 'Other/vel_err': 1.0, 'mAP': 0.09517547751881372, 'NDS': 0.16276047246642192, 'mtrans_err': 0.8844735102317577, 'mscale_err': 0.43422649645122613, 'morient_err': 0.5295726562468656, 'mvel_err': 1.7390709667100932, 'track/amota': 0.10070040219855408, 'track/amotp': 1.7495501425428202, 'track/recall': 0.17372541090987118, 'track/mota': 0.09909007535417556, 'track/motp': 0.9289041750734146, 'track/ids': 680.0, 'track/frag': 735.0, 'track/tid': 8.41622240332753, 'track/lgd': 12.920145198414582, 'track/Bicyclist/amota': 0.06074272951287159, 'track/Bicyclist/amotp': 1.7774816800955933, 'track/Bus/amota': 0.0, 'track/Bus/amotp': 2.0, 'track/Car/amota': 0.1520386490879157, 'track/Car/amotp': 1.6280022115460024, 'track/Motorcyclist/amota': 0.24967814824003431, 'track/Motorcyclist/amotp': 1.5379696165677745, 'track/Pedestrian/amota': 0.008701097074631783, 'track/Pedestrian/amotp': 1.8893583134310696, 'track/Truck/amota': 0.13304178927587113, 'track/Truck/amotp': 1.6644890336164821}
+
 
 # LOKI Dataset Adaptation for UniAD
 

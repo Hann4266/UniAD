@@ -17,8 +17,8 @@ matplotlib.rcParams.update({
     'axes.spines.right': False,
 })
 
-WORK_DIR = "projects/work_dirs/loki/base_loki_perception"
-STEPS_PER_EPOCH = 18084
+WORK_DIR = "work_dirs/base_loki_perception"
+STEPS_PER_EPOCH = 2261
 
 # ── Load only the latest JSON log (the current successful run) ──
 log_files = sorted(glob.glob(os.path.join(WORK_DIR, "*.log.json")))

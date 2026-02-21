@@ -308,6 +308,8 @@ train_pipeline = [
     dict(type="ObjectRangeFilterTrack",
          point_cloud_range=point_cloud_range),
     dict(type="ObjectNameFilterTrack", classes=class_names),
+    # LOKI: single front camera with 60° FOV — remove GT outside FOV
+    dict(type="ObjectFOVFilterTrack", fov_deg=60.0),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
     # Use standard DefaultFormatBundle3D (no gt_map_masks needed)

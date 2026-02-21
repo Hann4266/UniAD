@@ -16,6 +16,87 @@ from mmdet3d.core.bbox import LiDARInstance3DBoxes
 from mmdet3d.datasets import Custom3DDataset
 from mmcv.parallel import DataContainer as DC
 
+# Evaluation imports — reuse nuScenes eval algorithms
+from nuscenes.eval.common.data_classes import EvalBoxes
+from nuscenes.eval.detection.data_classes import (
+    DetectionBox, DetectionMetrics, DetectionMetricDataList)
+from nuscenes.eval.detection.algo import accumulate, calc_ap, calc_tp
+from nuscenes.eval.detection.constants import TP_METRICS
+from nuscenes.eval.common.utils import center_distance
+from pyquaternion import Quaternion
+from prettytable import PrettyTable
+
+# Tracking evaluation imports
+from nuscenes.eval.tracking.data_classes import (
+    TrackingBox, TrackingConfig, TrackingMetrics,
+    TrackingMetricData, TrackingMetricDataList)
+from nuscenes.eval.tracking.algo import TrackingEvaluation
+from nuscenes.eval.tracking.constants import (
+    MOT_METRIC_MAP, AVG_METRIC_MAP, TRACKING_METRICS)
+from nuscenes.eval.tracking.utils import print_final_metrics
+from collections import defaultdict
+
+
+# Half-FOV for LOKI's 60° front camera (used to filter GT outside camera view)
+_LOKI_HALF_FOV_RAD = np.deg2rad(60.0 / 2.0)
+
+
+def _in_fov(center_xy, half_fov=_LOKI_HALF_FOV_RAD):
+    """Check if a 2D point is within the front-camera FOV.
+
+    In the rotated lidar frame: +y = forward, +x = right.
+    Returns True if the point is in front AND within ±half_fov of +y.
+    """
+    x, y = float(center_xy[0]), float(center_xy[1])
+    return y > 0 and abs(np.arctan2(x, y)) <= half_fov
+
+
+class LokiDetectionConfig:
+    """Lightweight replacement for nuscenes DetectionConfig.
+
+    The upstream DetectionConfig asserts class_range keys == the 10
+    nuScenes detection classes.  This class drops that check so we
+    can use LOKI's own class names.
+    """
+
+    def __init__(self, class_range, dist_ths, dist_th_tp,
+                 min_recall, min_precision, max_boxes_per_sample,
+                 mean_ap_weight):
+        assert dist_th_tp in dist_ths
+        self.class_range = class_range
+        self.dist_ths = dist_ths
+        self.dist_th_tp = dist_th_tp
+        self.min_recall = min_recall
+        self.min_precision = min_precision
+        self.max_boxes_per_sample = max_boxes_per_sample
+        self.mean_ap_weight = mean_ap_weight
+        self.class_names = list(class_range.keys())
+
+
+class LokiDetectionBox(DetectionBox):
+    """DetectionBox that accepts arbitrary class names.
+
+    The upstream DetectionBox asserts detection_name is one of the 10
+    nuScenes DETECTION_NAMES.  We skip that so LOKI class names work.
+    """
+
+    def __init__(self, **kwargs):
+        from nuscenes.eval.common.data_classes import EvalBox
+        # Bypass DetectionBox.__init__ and call EvalBox directly
+        EvalBox.__init__(
+            self,
+            sample_token=kwargs.get('sample_token', ''),
+            translation=kwargs.get('translation', (0, 0, 0)),
+            size=kwargs.get('size', (0, 0, 0)),
+            rotation=kwargs.get('rotation', (0, 0, 0, 0)),
+            velocity=kwargs.get('velocity', (0, 0)),
+            ego_translation=kwargs.get('ego_translation', (0, 0, 0)),
+            num_pts=kwargs.get('num_pts', -1),
+        )
+        self.detection_name = kwargs.get('detection_name', '')
+        self.detection_score = kwargs.get('detection_score', -1.0)
+        self.attribute_name = kwargs.get('attribute_name', '')
+
 
 # ------------------------------------------------------------------------------- #
 # PKL stores lowercase mapped names ('car', 'pedestrian', 'truck', etc.)
@@ -571,23 +652,625 @@ class LokiE2EDataset(Custom3DDataset):
         return random.choice(pool) if pool else idx
 
     # ------------------------------------------------------------------ #
-    #  Evaluation placeholder
+    #  Evaluation — nuScenes-style detection metrics for LOKI
     # ------------------------------------------------------------------ #
 
     def evaluate(self, results, **kwargs):
-        """Simple evaluation placeholder."""
-        # results from custom_multi_gpu_test is a dict with 'bbox_results' key
+        """Evaluate detection results using nuScenes-style metrics.
+
+        Reuses nuscenes.eval.detection.algo (accumulate, calc_ap, calc_tp)
+        to compute per-class AP at multiple distance thresholds, mAP,
+        and TP error metrics (ATE, ASE, AOE, AVE).
+
+        All comparisons are done in the rotated lidar frame (the frame
+        the model operates in), so no global-frame transform is needed.
+
+        Args:
+            results: Either a list of per-frame detection dicts, or a dict
+                with 'bbox_results' key containing such a list.
+
+        Returns:
+            dict: Detection metrics (per-class AP, mAP, NDS, TP errors).
+        """
         if isinstance(results, dict):
             bbox_results = results.get('bbox_results', [])
         else:
             bbox_results = results
 
-        print(f"[LOKI Eval] Received {len(bbox_results)} results")
-        total_boxes = 0
-        for det in bbox_results:
-            if isinstance(det, dict) and 'boxes_3d' in det:
-                total_boxes += len(det['boxes_3d'])
-        print(f"[LOKI Eval] Total detected boxes: {total_boxes}")
-        avg_boxes = total_boxes / max(len(bbox_results), 1)
-        print(f"[LOKI Eval] Avg boxes per frame: {avg_boxes:.1f}")
-        return {'num_detections': total_boxes, 'avg_boxes_per_frame': avg_boxes}
+        assert len(bbox_results) == len(self), (
+            f'Results length {len(bbox_results)} != dataset length {len(self)}')
+
+        # --- detection evaluation ---
+        eval_cfg = self._get_eval_config()
+        gt_boxes = self._build_gt_eval_boxes(eval_cfg)
+        pred_boxes = self._build_pred_eval_boxes(bbox_results, eval_cfg)
+        detail = self._run_detection_eval(gt_boxes, pred_boxes, eval_cfg)
+
+        # --- tracking evaluation ---
+        track_detail = self._run_tracking_eval(bbox_results)
+        detail.update(track_detail)
+
+        return detail
+
+    # ----- eval helpers ------------------------------------------------ #
+
+    def _get_eval_config(self):
+        """Create a DetectionConfig for LOKI classes.
+
+        Uses the same distance thresholds and AP calculation parameters
+        as the standard nuScenes CVPR-2019 config, but with LOKI class
+        names and appropriate detection ranges for a single front camera.
+        """
+        class_range = {name: 50.0 for name in self.CLASSES}
+        # Shorter range for small / vulnerable road users
+        for short_cls in ('Pedestrian', 'Bicyclist', 'Other'):
+            if short_cls in class_range:
+                class_range[short_cls] = 40.0
+
+        return LokiDetectionConfig(
+            class_range=class_range,
+            dist_ths=[0.5, 1.0, 2.0, 4.0],
+            dist_th_tp=2.0,
+            min_recall=0.1,
+            min_precision=0.1,
+            max_boxes_per_sample=500,
+            mean_ap_weight=5,
+        )
+
+    def _build_gt_eval_boxes(self, eval_cfg):
+        """Build ground-truth EvalBoxes from the val pkl.
+
+        Applies the same 90-deg CCW rotation used in get_ann_info() so
+        that GT and predictions are in the same (rotated-lidar) frame.
+        """
+        gt_eval = EvalBoxes()
+
+        for idx in range(len(self)):
+            info = self.data_infos[idx]
+            token = info['token']
+
+            mask = info['valid_flag'] if self.use_valid_flag \
+                else info['num_lidar_pts'] > 0
+            boxes_raw = info['gt_boxes'][mask].copy()
+            names_raw = info['gt_names'][mask]
+
+            # --- 90-deg CCW rotation (identical to get_ann_info) ---
+            if len(boxes_raw) > 0:
+                ox, oy = boxes_raw[:, 0].copy(), boxes_raw[:, 1].copy()
+                boxes_raw[:, 0] = -oy
+                boxes_raw[:, 1] = ox
+                boxes_raw[:, 6] += 0.5 * np.pi
+                if boxes_raw.shape[-1] >= 9:
+                    ovx, ovy = boxes_raw[:, 7].copy(), boxes_raw[:, 8].copy()
+                    boxes_raw[:, 7] = -ovy
+                    boxes_raw[:, 8] = ovx
+
+            sample_boxes = []
+            for i in range(len(boxes_raw)):
+                det_name = PKL_TO_CONFIG.get(names_raw[i], None)
+                if det_name is None or det_name not in self.CLASSES:
+                    continue
+
+                center = boxes_raw[i, :3]
+                if np.linalg.norm(center[:2]) > eval_cfg.class_range.get(
+                        det_name, 50.0):
+                    continue
+
+                # Skip GT outside the front camera's 60° FOV
+                if not _in_fov(center[:2]):
+                    continue
+
+                quat = Quaternion(axis=[0, 0, 1],
+                                  radians=float(boxes_raw[i, 6]))
+                vel = (float(boxes_raw[i, 7]),
+                       float(boxes_raw[i, 8])) \
+                    if boxes_raw.shape[-1] >= 9 else (0.0, 0.0)
+
+                sample_boxes.append(LokiDetectionBox(
+                    sample_token=token,
+                    translation=tuple(center.tolist()),
+                    size=tuple(boxes_raw[i, 3:6].tolist()),
+                    rotation=tuple(quat.elements.tolist()),
+                    velocity=vel,
+                    ego_translation=tuple(center.tolist()),  # ego at origin
+                    num_pts=-1,
+                    detection_name=det_name,
+                    detection_score=-1.0,
+                    attribute_name='',
+                ))
+
+            gt_eval.add_boxes(token, sample_boxes)
+
+        return gt_eval
+
+    def _build_pred_eval_boxes(self, results, eval_cfg):
+        """Build prediction EvalBoxes from model outputs.
+
+        Model outputs are already in the rotated-lidar frame.
+        """
+        pred_eval = EvalBoxes()
+
+        for sample_id, det in enumerate(results):
+            token = self.data_infos[sample_id]['token']
+            sample_boxes = []
+
+            if not isinstance(det, dict) or 'boxes_3d' not in det:
+                pred_eval.add_boxes(token, sample_boxes)
+                continue
+
+            # Prefer detection-specific outputs (pre-tracking)
+            boxes_3d = det.get('boxes_3d_det', det['boxes_3d'])
+            scores_3d = det.get('scores_3d_det', det['scores_3d'])
+            labels_3d = det.get('labels_3d_det', det['labels_3d'])
+
+            if hasattr(boxes_3d, 'tensor'):
+                tensor = boxes_3d.tensor
+                if tensor.is_cuda:
+                    tensor = tensor.cpu()
+                centers = boxes_3d.gravity_center.cpu().numpy() \
+                    if boxes_3d.gravity_center.is_cuda \
+                    else boxes_3d.gravity_center.numpy()
+                dims = boxes_3d.dims.cpu().numpy() \
+                    if boxes_3d.dims.is_cuda \
+                    else boxes_3d.dims.numpy()
+                yaws = boxes_3d.yaw.cpu().numpy() \
+                    if boxes_3d.yaw.is_cuda \
+                    else boxes_3d.yaw.numpy()
+                vels = tensor[:, 7:9].numpy() if tensor.shape[-1] > 7 \
+                    else np.zeros((len(boxes_3d), 2))
+            else:
+                pred_eval.add_boxes(token, sample_boxes)
+                continue
+
+            scores = scores_3d.cpu().numpy() if hasattr(scores_3d, 'cpu') \
+                else np.asarray(scores_3d)
+            labels = labels_3d.cpu().numpy() if hasattr(labels_3d, 'cpu') \
+                else np.asarray(labels_3d)
+
+            for i in range(len(boxes_3d)):
+                label_idx = int(labels[i])
+                if label_idx < 0 or label_idx >= len(self.CLASSES):
+                    continue
+                det_name = self.CLASSES[label_idx]
+                if np.linalg.norm(centers[i, :2]) > eval_cfg.class_range.get(
+                        det_name, 50.0):
+                    continue
+
+                # Skip predictions outside the front camera's 60° FOV
+                if not _in_fov(centers[i, :2]):
+                    continue
+
+                quat = Quaternion(axis=[0, 0, 1],
+                                  radians=float(yaws[i]))
+                sample_boxes.append(LokiDetectionBox(
+                    sample_token=token,
+                    translation=tuple(centers[i].tolist()),
+                    size=tuple(dims[i].tolist()),
+                    rotation=tuple(quat.elements.tolist()),
+                    velocity=(float(vels[i, 0]), float(vels[i, 1])),
+                    ego_translation=tuple(centers[i].tolist()),
+                    num_pts=-1,
+                    detection_name=det_name,
+                    detection_score=float(scores[i]),
+                    attribute_name='',
+                ))
+
+            # Cap boxes per sample (nuscenes convention)
+            if len(sample_boxes) > eval_cfg.max_boxes_per_sample:
+                sample_boxes.sort(key=lambda b: b.detection_score,
+                                  reverse=True)
+                sample_boxes = sample_boxes[:eval_cfg.max_boxes_per_sample]
+
+            pred_eval.add_boxes(token, sample_boxes)
+
+        return pred_eval
+
+    def _run_detection_eval(self, gt_boxes, pred_boxes, eval_cfg):
+        """Run nuScenes-style detection evaluation.
+
+        Uses accumulate / calc_ap / calc_tp from the nuscenes-devkit.
+        """
+        # Ensure both have identical sample-token sets
+        all_tokens = set(gt_boxes.sample_tokens) | \
+            set(pred_boxes.sample_tokens)
+        for t in all_tokens:
+            if t not in gt_boxes.boxes:
+                gt_boxes.add_boxes(t, [])
+            if t not in pred_boxes.boxes:
+                pred_boxes.add_boxes(t, [])
+
+        # ---- Step 1: accumulate metric data per class / dist_th ---- #
+        print('Accumulating metric data ...')
+        md_list = DetectionMetricDataList()
+        for cls in eval_cfg.class_names:
+            for dist_th in eval_cfg.dist_ths:
+                md = accumulate(gt_boxes, pred_boxes, cls,
+                                center_distance, dist_th)
+                md_list.set(cls, dist_th, md)
+
+        # ---- Step 2: compute AP and TP metrics ---- #
+        print('Computing metrics ...')
+        metrics = DetectionMetrics(eval_cfg)
+        for cls in eval_cfg.class_names:
+            for dist_th in eval_cfg.dist_ths:
+                md = md_list[(cls, dist_th)]
+                ap = calc_ap(md, eval_cfg.min_recall,
+                             eval_cfg.min_precision)
+                metrics.add_label_ap(cls, dist_th, ap)
+
+            for metric_name in TP_METRICS:
+                md = md_list[(cls, eval_cfg.dist_th_tp)]
+                if metric_name == 'attr_err':
+                    tp = 1.0          # LOKI has no attributes → worst err
+                else:
+                    tp = calc_tp(md, eval_cfg.min_recall, metric_name)
+                metrics.add_label_tp(cls, metric_name, tp)
+
+        # ---- Step 3: print & return ---- #
+        detail = self._print_detection_results(metrics, eval_cfg)
+        return detail
+
+    def _print_detection_results(self, metrics, eval_cfg):
+        """Pretty-print detection results and return a flat metrics dict."""
+        print('\n' + '=' * 70)
+        print('  LOKI Detection Evaluation Results')
+        print('=' * 70)
+
+        # --- per-class AP table ---
+        ap_tab = PrettyTable()
+        ap_tab.field_names = (['Class']
+                              + [f'd={d}' for d in eval_cfg.dist_ths]
+                              + ['Mean'])
+        for cls in eval_cfg.class_names:
+            row = [cls]
+            aps = []
+            for d in eval_cfg.dist_ths:
+                v = metrics.get_label_ap(cls, d)
+                row.append(f'{v:.4f}')
+                aps.append(v)
+            row.append(f'{np.mean(aps):.4f}')
+            ap_tab.add_row(row)
+        print('\nPer-class Average Precision:')
+        print(ap_tab)
+
+        # --- TP error table (skip attr_err) ---
+        tp_names = [m for m in TP_METRICS if m != 'attr_err']
+        tp_tab = PrettyTable()
+        tp_tab.field_names = ['Class'] + tp_names
+        for cls in eval_cfg.class_names:
+            row = [cls]
+            for m in tp_names:
+                v = metrics.get_label_tp(cls, m)
+                row.append(f'{v:.4f}' if not np.isnan(v) else 'N/A')
+            tp_tab.add_row(row)
+        print('\nTrue Positive Errors (lower is better):')
+        print(tp_tab)
+
+        # --- summary ---
+        mean_ap = float(metrics.mean_ap)
+        nd_score = float(metrics.nd_score)
+        print(f'\nmAP : {mean_ap:.4f}')
+        print(f'NDS : {nd_score:.4f}')
+
+        # Mean TP errors
+        tp_errors = metrics.tp_errors
+        for m in tp_names:
+            print(f'm{m.replace("_err","").upper()+"E"}: {tp_errors[m]:.4f}')
+        print('=' * 70 + '\n')
+
+        # --- build flat dict for mmdet3d logger ---
+        detail = {}
+        for cls in eval_cfg.class_names:
+            for d in eval_cfg.dist_ths:
+                detail[f'{cls}/AP_d{d}'] = float(
+                    metrics.get_label_ap(cls, d))
+            for m in tp_names:
+                v = metrics.get_label_tp(cls, m)
+                if not np.isnan(v):
+                    detail[f'{cls}/{m}'] = float(v)
+        detail['mAP'] = mean_ap
+        detail['NDS'] = nd_score
+        for m in tp_names:
+            detail[f'm{m}'] = float(tp_errors[m])
+        return detail
+
+    # ================================================================== #
+    #  Tracking Evaluation
+    # ================================================================== #
+
+    def _get_tracking_config(self):
+        """Create a TrackingConfig for LOKI classes.
+
+        Creating this config sets the module-global TRACKING_NAMES in
+        nuscenes.eval.tracking.data_classes, which allows TrackingBox
+        to accept LOKI class names.
+        """
+        tracking_names = list(self.CLASSES)
+        class_range = {name: 50.0 for name in tracking_names}
+        for short_cls in ('Pedestrian', 'Bicyclist', 'Other'):
+            if short_cls in class_range:
+                class_range[short_cls] = 40.0
+
+        metric_worst = {
+            'amota': 0.0, 'amotp': 2.0, 'recall': 0.0, 'motar': 0.0,
+            'mota': 0.0, 'motp': 2.0, 'mt': 0.0, 'ml': -1.0,
+            'faf': 500, 'gt': -1, 'tp': 0.0, 'fp': -1.0, 'fn': -1.0,
+            'ids': -1.0, 'frag': -1.0, 'tid': 20, 'lgd': 20,
+        }
+
+        return TrackingConfig(
+            tracking_names=tracking_names,
+            pretty_tracking_names={n: n for n in tracking_names},
+            tracking_colors={n: 'C0' for n in tracking_names},
+            class_range=class_range,
+            dist_fcn='center_distance',
+            dist_th_tp=2.0,
+            min_recall=0.1,
+            max_boxes_per_sample=500,
+            metric_worst=metric_worst,
+            num_thresholds=40,
+        )
+
+    def _build_gt_tracks(self, track_cfg):
+        """Build GT tracks: {scene_token: {timestamp: [TrackingBox]}}.
+
+        Uses gt_inds from the pkl as tracking IDs and applies the same
+        90-deg rotation as get_ann_info().
+        """
+        tracks = defaultdict(lambda: defaultdict(list))
+
+        for idx in range(len(self)):
+            info = self.data_infos[idx]
+            scene = info['scene_token']
+            timestamp = idx   # sequential index as timestamp
+
+            mask = info['valid_flag'] if self.use_valid_flag \
+                else info['num_lidar_pts'] > 0
+            boxes_raw = info['gt_boxes'][mask].copy()
+            names_raw = info['gt_names'][mask]
+            inds_raw = info['gt_inds'][mask]
+
+            # 90-deg CCW rotation (same as get_ann_info / _build_gt_eval_boxes)
+            if len(boxes_raw) > 0:
+                ox, oy = boxes_raw[:, 0].copy(), boxes_raw[:, 1].copy()
+                boxes_raw[:, 0] = -oy
+                boxes_raw[:, 1] = ox
+                boxes_raw[:, 6] += 0.5 * np.pi
+                if boxes_raw.shape[-1] >= 9:
+                    ovx, ovy = boxes_raw[:, 7].copy(), boxes_raw[:, 8].copy()
+                    boxes_raw[:, 7] = -ovy
+                    boxes_raw[:, 8] = ovx
+
+            frame_boxes = []
+            for i in range(len(boxes_raw)):
+                det_name = PKL_TO_CONFIG.get(names_raw[i], None)
+                if det_name is None or det_name not in self.CLASSES:
+                    continue
+                center = boxes_raw[i, :3]
+                if np.linalg.norm(center[:2]) > track_cfg.class_range.get(
+                        det_name, 50.0):
+                    continue
+
+                # Skip GT outside the front camera's 60° FOV
+                if not _in_fov(center[:2]):
+                    continue
+
+                quat = Quaternion(axis=[0, 0, 1],
+                                  radians=float(boxes_raw[i, 6]))
+                vel = (float(boxes_raw[i, 7]),
+                       float(boxes_raw[i, 8])) \
+                    if boxes_raw.shape[-1] >= 9 else (0.0, 0.0)
+
+                frame_boxes.append(TrackingBox(
+                    sample_token=info['token'],
+                    translation=tuple(center.tolist()),
+                    size=tuple(boxes_raw[i, 3:6].tolist()),
+                    rotation=tuple(quat.elements.tolist()),
+                    velocity=vel,
+                    ego_translation=tuple(center.tolist()),
+                    num_pts=-1,
+                    tracking_id=str(int(inds_raw[i])),
+                    tracking_name=det_name,
+                    tracking_score=-1.0,
+                ))
+
+            tracks[scene][timestamp] = frame_boxes
+
+        return dict(tracks)
+
+    def _build_pred_tracks(self, results, track_cfg):
+        """Build predicted tracks: {scene_token: {timestamp: [TrackingBox]}}.
+
+        Uses track_ids from model output as tracking IDs.
+        Falls back to boxes_3d (post-tracking) rather than boxes_3d_det.
+        """
+        tracks = defaultdict(lambda: defaultdict(list))
+
+        for sample_id, det in enumerate(results):
+            info = self.data_infos[sample_id]
+            scene = info['scene_token']
+            timestamp = sample_id
+
+            if not isinstance(det, dict) or 'boxes_3d' not in det:
+                tracks[scene][timestamp] = []
+                continue
+
+            # Use post-tracking outputs (boxes_3d, not boxes_3d_det)
+            boxes_3d = det['boxes_3d']
+            scores_3d = det['scores_3d']
+            labels_3d = det['labels_3d']
+            track_ids = det.get('track_ids', None)
+
+            if hasattr(boxes_3d, 'tensor'):
+                tensor = boxes_3d.tensor
+                if tensor.is_cuda:
+                    tensor = tensor.cpu()
+                centers = boxes_3d.gravity_center.cpu().numpy() \
+                    if boxes_3d.gravity_center.is_cuda \
+                    else boxes_3d.gravity_center.numpy()
+                dims = boxes_3d.dims.cpu().numpy() \
+                    if boxes_3d.dims.is_cuda else boxes_3d.dims.numpy()
+                yaws = boxes_3d.yaw.cpu().numpy() \
+                    if boxes_3d.yaw.is_cuda else boxes_3d.yaw.numpy()
+                vels = tensor[:, 7:9].numpy() if tensor.shape[-1] > 7 \
+                    else np.zeros((len(boxes_3d), 2))
+            else:
+                tracks[scene][timestamp] = []
+                continue
+
+            scores = scores_3d.cpu().numpy() if hasattr(scores_3d, 'cpu') \
+                else np.asarray(scores_3d)
+            labels = labels_3d.cpu().numpy() if hasattr(labels_3d, 'cpu') \
+                else np.asarray(labels_3d)
+            if track_ids is not None:
+                tids = track_ids.cpu().numpy() if hasattr(track_ids, 'cpu') \
+                    else np.asarray(track_ids)
+            else:
+                tids = np.arange(len(boxes_3d))
+
+            frame_boxes = []
+            for i in range(len(boxes_3d)):
+                label_idx = int(labels[i])
+                if label_idx < 0 or label_idx >= len(self.CLASSES):
+                    continue
+                det_name = self.CLASSES[label_idx]
+                if np.linalg.norm(centers[i, :2]) > track_cfg.class_range.get(
+                        det_name, 50.0):
+                    continue
+
+                # Skip predictions outside the front camera's 60° FOV
+                if not _in_fov(centers[i, :2]):
+                    continue
+
+                quat = Quaternion(axis=[0, 0, 1],
+                                  radians=float(yaws[i]))
+                frame_boxes.append(TrackingBox(
+                    sample_token=info['token'],
+                    translation=tuple(centers[i].tolist()),
+                    size=tuple(dims[i].tolist()),
+                    rotation=tuple(quat.elements.tolist()),
+                    velocity=(float(vels[i, 0]), float(vels[i, 1])),
+                    ego_translation=tuple(centers[i].tolist()),
+                    num_pts=-1,
+                    tracking_id=str(int(tids[i])),
+                    tracking_name=det_name,
+                    tracking_score=float(scores[i]),
+                ))
+
+            tracks[scene][timestamp] = frame_boxes
+
+        return dict(tracks)
+
+    def _run_tracking_eval(self, bbox_results):
+        """Run nuScenes-style tracking evaluation (AMOTA, MOTP, etc.).
+
+        Builds GT/pred tracks from data_infos and model outputs, then
+        runs TrackingEvaluation per class using motmetrics.
+        """
+        print('\n' + '=' * 70)
+        print('  LOKI Tracking Evaluation')
+        print('=' * 70)
+
+        track_cfg = self._get_tracking_config()
+        gt_tracks = self._build_gt_tracks(track_cfg)
+        pred_tracks = self._build_pred_tracks(bbox_results, track_cfg)
+
+        # Ensure pred_tracks has all GT scenes (with empty frames if needed)
+        for scene in gt_tracks:
+            if scene not in pred_tracks:
+                pred_tracks[scene] = {
+                    ts: [] for ts in gt_tracks[scene]}
+            else:
+                for ts in gt_tracks[scene]:
+                    if ts not in pred_tracks[scene]:
+                        pred_tracks[scene][ts] = []
+
+        # Per-class accumulation (mirrors TrackingEval.evaluate())
+        print('Accumulating tracking metrics ...')
+        metrics = TrackingMetrics(track_cfg)
+        md_list = TrackingMetricDataList()
+
+        for cls in track_cfg.class_names:
+            ev = TrackingEvaluation(
+                tracks_gt=gt_tracks,
+                tracks_pred=pred_tracks,
+                class_name=cls,
+                dist_fcn=center_distance,
+                dist_th_tp=track_cfg.dist_th_tp,
+                min_recall=track_cfg.min_recall,
+                num_thresholds=TrackingMetricData.nelem,
+                metric_worst=track_cfg.metric_worst,
+                verbose=False,
+            )
+            md = ev.accumulate()
+            md_list.set(cls, md)
+
+        # Aggregate per-class metrics (same logic as TrackingEval.evaluate)
+        for cls in track_cfg.class_names:
+            md = md_list[cls]
+            if np.all(np.isnan(md.mota)):
+                best_idx = None
+            else:
+                best_idx = int(np.nanargmax(md.mota))
+
+            if best_idx is not None:
+                for metric_name in MOT_METRIC_MAP.values():
+                    if metric_name == '':
+                        continue
+                    val = md.get_metric(metric_name)[best_idx]
+                    metrics.add_label_metric(metric_name, cls, val)
+
+            for metric_name in AVG_METRIC_MAP.keys():
+                values = np.array(
+                    md.get_metric(AVG_METRIC_MAP[metric_name]))
+                if np.all(np.isnan(values)):
+                    val = np.nan
+                else:
+                    values[np.isnan(values)] = \
+                        track_cfg.metric_worst[metric_name]
+                    val = float(np.nanmean(values))
+                metrics.add_label_metric(metric_name, cls, val)
+
+        return self._print_tracking_results(metrics, track_cfg)
+
+    def _print_tracking_results(self, metrics, track_cfg):
+        """Pretty-print tracking results and return a flat dict."""
+        serialized = metrics.serialize()
+
+        # Main summary metrics
+        main_keys = ['amota', 'amotp', 'recall', 'mota', 'motp',
+                      'ids', 'frag', 'tid', 'lgd']
+        tab = PrettyTable()
+        tab.field_names = ['Metric', 'Value']
+        for k in main_keys:
+            v = serialized.get(k, np.nan)
+            tab.add_row([k.upper(), f'{v:.4f}' if not np.isnan(v) else 'N/A'])
+        print('\nOverall Tracking Metrics:')
+        print(tab)
+
+        # Per-class AMOTA table
+        cls_tab = PrettyTable()
+        cls_tab.field_names = ['Class', 'AMOTA', 'AMOTP', 'RECALL',
+                                'MOTA', 'IDS']
+        for cls in track_cfg.class_names:
+            row = [cls]
+            for m in ['amota', 'amotp', 'recall', 'mota', 'ids']:
+                v = metrics.label_metrics.get(m, {}).get(cls, np.nan)
+                row.append(f'{v:.4f}' if not np.isnan(v) else 'N/A')
+            cls_tab.add_row(row)
+        print('\nPer-class Tracking:')
+        print(cls_tab)
+        print('=' * 70 + '\n')
+
+        # Build flat dict
+        detail = {}
+        for k in main_keys:
+            v = serialized.get(k, np.nan)
+            if not np.isnan(v):
+                detail[f'track/{k}'] = float(v)
+        for cls in track_cfg.class_names:
+            for m in ['amota', 'amotp']:
+                v = metrics.label_metrics.get(m, {}).get(cls, np.nan)
+                if not np.isnan(v):
+                    detail[f'track/{cls}/{m}'] = float(v)
+        return detail
