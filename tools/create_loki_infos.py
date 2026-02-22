@@ -282,6 +282,19 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
         anns = all_label3d.get(fidx, [])
         n_obj = len(anns)
 
+        # Camera visibility: check if each 3D agent has a 2D bbox in label2d
+        label2d_path = os.path.join(scenario_dir, f"label2d_{fid_str}.json")
+        visible_uuids = set()
+        if os.path.exists(label2d_path):
+            with open(label2d_path, 'r') as f2d:
+                data2d = json.load(f2d)
+            for cls_entries in data2d.values():
+                if isinstance(cls_entries, dict):
+                    visible_uuids.update(cls_entries.keys())
+        gt_camera_visible = np.array(
+            [ann['track_id'] in visible_uuids for ann in anns],
+            dtype=bool) if n_obj > 0 else np.array([], dtype=bool)
+
         if n_obj > 0:
             gt_boxes = np.zeros((n_obj, 9), dtype=np.float64)
             gt_names = []
@@ -355,6 +368,9 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             # Validity (all are valid since we check image exists)
             valid_flag=np.ones(n_obj, dtype=bool),
             num_lidar_pts=np.ones(n_obj, dtype=np.int64) * 100,
+
+            # Camera visibility: True if the 3D agent has a 2D bbox in label2d
+            gt_camera_visible=gt_camera_visible,
         )
         frame_infos.append(info)
 

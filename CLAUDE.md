@@ -25,16 +25,41 @@ LOKI has a single front camera with 60° horizontal FOV. GT annotations in the p
 - `projects/configs/loki/base_loki_perception.py` — added to train_pipeline after `ObjectNameFilterTrack`
 - `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `_in_fov()` + filtering in `_build_gt_eval_boxes`, `_build_pred_eval_boxes`, `_build_gt_tracks`, `_build_pred_tracks`
 
+## Camera Visibility Filter (occlusion-aware)
+The FOV filter only checks angular position — agents within the 60° cone but fully occluded by other objects are still kept as GT, creating false negatives. The camera visibility filter cross-references `label3d` (3D boxes, 360°) with `label2d` (2D boxes, only camera-visible agents) using shared UUID track IDs to remove 3D GT objects that have no corresponding 2D annotation.
+
+### How it works
+1. `create_loki_infos.py` loads `label2d_*.json` per frame, collects all UUIDs, and stores `gt_camera_visible` (bool array) in the pkl for each frame
+2. `ObjectCameraVisibleFilter` pipeline transform filters `gt_bboxes_3d` and all parallel arrays by this flag
+3. Runs after `ObjectFOVFilterTrack` in the training pipeline — the FOV filter removes behind/beside agents, the visibility filter removes occluded agents within the FOV
+4. All upstream filters (`ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`) propagate `gt_camera_visible` in sync
+
+### Impact
+~46% of 3D agents across all scenes have no 2D bbox (checked 100 scenarios, 6967 frames). After FOV filtering removes ~57%, the visibility filter further removes occluded-from-camera agents within the FOV cone.
+
+### Files modified
+- `tools/create_loki_infos.py` — loads `label2d_*.json`, stores `gt_camera_visible` in pkl
+- `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — `ObjectCameraVisibleFilter` class + `gt_camera_visible` propagation in all 3 existing filters
+- `projects/mmdet3d_plugin/datasets/pipelines/__init__.py` — export
+- `projects/configs/loki/base_loki_perception.py` — added after `ObjectFOVFilterTrack`
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `gt_camera_visible` in `get_ann_info()` and `get_data_info()`
+
+### Regenerating pkl (required before training)
+```bash
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_infos.py \
+    --data-root /mnt/storage/loki_data --out-dir data/infos
+```
+
 ## Key Files
 
 ### Dataset
 - `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — Main dataset class `LokiE2EDataset`. Mirrors `NuScenesE2EDataset` but single-camera. Contains `get_ann_info()`, `get_data_info()`, `prepare_train_data()`, `union2one()`, and full evaluation pipeline with FOV filtering.
-- `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — Pipeline transforms including `ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`
+- `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — Pipeline transforms including `ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`, `ObjectCameraVisibleFilter`
 - `projects/mmdet3d_plugin/datasets/pipelines/loki_loading.py` — `LoadLokiImage` (single camera, scales lidar2img if resized from 1920x1208), `GenerateDummyOccLabels`
 - `PKL_TO_CONFIG` dict maps lowercase pkl names → capitalized config names (e.g. `'car'→'Car'`)
 
 ### Config
-- `projects/configs/loki/base_loki_perception.py` — Single config file. 8 classes, BEV 200x100 (w x h), ResNet101+DCN backbone. Train pipeline includes `ObjectFOVFilterTrack(fov_deg=60.0)`.
+- `projects/configs/loki/base_loki_perception.py` — Single config file. 8 classes, BEV 200x100 (w x h), ResNet101+DCN backbone. Train pipeline includes `ObjectFOVFilterTrack(fov_deg=60.0)` and `ObjectCameraVisibleFilter`.
 - `bev_h_=100, bev_w_=200` → grid_length = (0.512, 0.512)
 
 ### Model
@@ -52,7 +77,7 @@ LOKI has a single front camera with 60° horizontal FOV. GT annotations in the p
 ### Data
 - `data/infos/loki_infos_train.pkl`, `data/infos/loki_infos_val.pkl` — Pre-computed info dicts
 - Raw images at `/mnt/storage/loki_data/scenario_XXX/image_XXXX.png`
-- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation`
+- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation, gt_camera_visible`
 - `gt_boxes` shape: (N, 9) = [x, y, z, l, w, h, yaw, vx, vy]
 
 ### Training Outputs
