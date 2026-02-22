@@ -85,18 +85,32 @@ def euler_to_rotation_matrix(roll, pitch, yaw):
 
 
 def parse_odom(filepath):
-    """Parse a single odometry file → (x, y, z, roll, pitch, yaw)."""
-    with open(filepath, 'r') as f:
-        vals = [float(v) for v in f.readline().strip().split(',')]
-    assert len(vals) == 6, f"Expected 6 values in {filepath}, got {len(vals)}"
-    return np.array(vals, dtype=np.float64)
+    """Parse a single odometry file → (x, y, z, roll, pitch, yaw).
+
+    Returns None if the file is corrupted or unreadable.
+    """
+    try:
+        with open(filepath, 'r') as f:
+            parts = [v for v in f.readline().strip().split(',') if v]
+        if len(parts) != 6:
+            print(f"  WARNING: skipping bad odom {filepath}: got {len(parts)} values")
+            return None
+        vals = [float(v) for v in parts]
+        return np.array(vals, dtype=np.float64)
+    except Exception as e:
+        print(f"  WARNING: skipping corrupted odom {filepath}: {e}")
+        return None
 
 
 def parse_label3d(filepath):
     """Parse a 3D label file → list of annotation dicts."""
     annotations = []
-    with open(filepath, 'r') as f:
-        lines = f.readlines()
+    try:
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"  WARNING: skipping corrupted label3d {filepath}: {e}")
+        return annotations
     if len(lines) <= 1:
         return annotations
     # skip header
@@ -161,10 +175,17 @@ def get_frame_data_availability(scenario_dir, frame_idx):
 
 
 def load_lidar_points(ply_path):
-    """Load LiDAR point cloud from PLY file → (N, 3) xyz array."""
-    ply = PlyData.read(ply_path)
-    v = ply['vertex']
-    return np.column_stack([v['x'], v['y'], v['z']]).astype(np.float64)
+    """Load LiDAR point cloud from PLY file → (N, 3) xyz array.
+
+    Returns None if the file is corrupted or unreadable.
+    """
+    try:
+        ply = PlyData.read(ply_path)
+        v = ply['vertex']
+        return np.column_stack([v['x'], v['y'], v['z']]).astype(np.float64)
+    except Exception as e:
+        print(f"  WARNING: skipping corrupted PLY {ply_path}: {e}")
+        return None
 
 
 def count_points_in_boxes(pts, boxes):
@@ -211,7 +232,9 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
     for fidx in frame_indices:
         odom_path = os.path.join(scenario_dir, f"odom_{fidx:04d}.txt")
         if os.path.exists(odom_path):
-            odom_data[fidx] = parse_odom(odom_path)
+            parsed = parse_odom(odom_path)
+            if parsed is not None:
+                odom_data[fidx] = parsed
 
     # Accumulate ego poses: first frame as origin
     # Odometry values appear to already be cumulative poses (positions grow)
@@ -365,11 +388,14 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
         # Compute real num_lidar_pts per GT box
         if avail['pc'] and n_obj > 0:
             lidar_pts = load_lidar_points(pc_path)
-            box_dicts = [
-                dict(pos=anns[j]['pos'], dim=anns[j]['dim'], yaw=anns[j]['yaw'])
-                for j in range(n_obj)
-            ]
-            num_lidar_pts = count_points_in_boxes(lidar_pts, box_dicts)
+            if lidar_pts is not None:
+                box_dicts = [
+                    dict(pos=anns[j]['pos'], dim=anns[j]['dim'], yaw=anns[j]['yaw'])
+                    for j in range(n_obj)
+                ]
+                num_lidar_pts = count_points_in_boxes(lidar_pts, box_dicts)
+            else:
+                num_lidar_pts = np.zeros(n_obj, dtype=np.int64)
         else:
             num_lidar_pts = np.zeros(n_obj, dtype=np.int64)
 
@@ -465,9 +491,10 @@ def main():
         scenario_dir = os.path.join(data_root, scenario_name)
         frame_infos = process_scenario(scenario_dir, scenario_name, global_track_id_map)
         all_infos[scenario_name] = frame_infos
-        if (i + 1) % 50 == 0 or (i + 1) == len(scenario_names):
+        if (i + 1) % 10 == 0 or (i + 1) == len(scenario_names):
             print(f"  Processed {i + 1}/{len(scenario_names)} scenarios "
-                  f"({sum(len(v) for v in all_infos.values())} frames total)")
+                  f"({sum(len(v) for v in all_infos.values())} frames total)",
+                  flush=True)
 
     # Build split info lists
     def build_split_infos(split_scenarios):

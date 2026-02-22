@@ -1,25 +1,13 @@
 #!/usr/bin/env python3
 import re
-import matplotlib.pyplot as plt
-import subprocess
 import sys
+import matplotlib.pyplot as plt
 
-# Get the log file from the pod
-pod_name = "tingji-dual-mount-deployment-69cc799cdf-m7fdz"
-log_file = "/mnt/storage/UniAD/projects/work_dirs/loki/base_loki_perception/train_20260215_224353.log"
+log_file = "/mnt/storage/UniAD/projects/work_dirs/loki/base_loki_perception/train_20260221_100938.log"
 
-print("Fetching log file from pod...")
-result = subprocess.run(
-    ["kubectl", "exec", pod_name, "--", "cat", log_file],
-    capture_output=True,
-    text=True
-)
-
-if result.returncode != 0:
-    print(f"Error fetching log: {result.stderr}")
-    sys.exit(1)
-
-log_content = result.stdout
+print(f"Reading log file: {log_file}")
+with open(log_file) as f:
+    log_content = f.read()
 
 # Parse the log to extract loss values
 pattern = r'Epoch \[(\d+)\]\[(\d+)/\d+\].*?loss: ([\d.]+)'
@@ -68,8 +56,9 @@ if len(losses) >= window:
     plt.legend()
 
 plt.tight_layout()
-plt.savefig('/Users/macbook/Desktop/AVL/training_loss.png', dpi=150)
-print(f"\nPlot saved to /Users/macbook/Desktop/AVL/training_loss.png")
+out_path = '/mnt/storage/UniAD/projects/work_dirs/loki/base_loki_perception/training_loss.png'
+plt.savefig(out_path, dpi=150)
+print(f"\nPlot saved to {out_path}")
 
 # Print statistics
 print(f"\nLoss Statistics:")

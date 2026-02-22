@@ -632,7 +632,6 @@ class LokiE2EDataset(Custom3DDataset):
 
         # Preserve gt_depth from the last frame (for LiDAR depth supervision)
         if 'gt_depth' in queue:
-            import torch
             gt_depth = queue['gt_depth']
             if not isinstance(gt_depth, torch.Tensor):
                 gt_depth = torch.from_numpy(gt_depth).float()
