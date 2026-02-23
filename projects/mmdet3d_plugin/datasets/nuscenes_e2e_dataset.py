@@ -8,6 +8,7 @@ import copy
 import numpy as np
 import torch
 import mmcv
+import json
 from mmdet.datasets import DATASETS
 from mmdet.datasets.pipelines import to_tensor
 from mmdet3d.datasets import NuScenesDataset
@@ -33,6 +34,190 @@ from projects.mmdet3d_plugin.datasets.data_utils.trajectory_api import NuScenesT
 from .data_utils.data_utils import lidar_nusc_box_to_global, obtain_map_info, output_to_nusc_box, output_to_nusc_box_det
 from nuscenes.prediction import convert_local_coords_to_global
 
+import os
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import numpy as np
+def intent_label(index, action_array):
+    intent_dic={
+        "Crossing" : 2,
+        "TURN_RIGHT": 3,
+        "TURN_LEFT": 4,
+        "LANE_CHANGE_RIGHT": 5,
+        "LANE_CHANGE_LEFT": 6,
+        "STOPPED": 0,
+        "MOVING": 1,
+        "Stopped": 0,
+        "Moving": 1
+    }
+    if index < 0 or index >= len(action_array)-1:
+        return -1
+
+    action = action_array[index]
+
+    end = min(len(action_array), index + 5)
+    future_actions = action_array[index + 1:end]
+    if len(future_actions) == 0 or all(a == "na" for a in future_actions):
+        return -1
+
+    action_set = {"Crossing", "TURN_RIGHT", "TURN_LEFT", "LANE_CHANGE_RIGHT", "LANE_CHANGE_LEFT"}
+    
+    if action in action_set:
+        for next_action in future_actions:
+            if next_action != action and next_action!= "na":
+                return intent_dic[next_action]
+        return intent_dic[action]
+    elif action == "STOPPED" or action == "Stopped":
+        next_moving = False
+        for next_action in future_actions:
+            if next_action in action_set:
+                return intent_dic[next_action]
+            elif next_action=="MOVING" or next_action=="Moving":
+                next_moving = True
+        return intent_dic["MOVING"] if next_moving else intent_dic["STOPPED"]
+    elif action == "MOVING" or action == "Moving":
+        next_stop = False
+        for next_action in future_actions:
+            if next_action in action_set:
+                return intent_dic[next_action]
+            elif next_action=="STOPPED" or next_action == "Stopped":
+                next_moving = True
+        return intent_dic["STOPPED"] if next_stop else intent_dic["MOVING"]
+    else:
+        return -1
+
+        
+            
+
+def mask_for_polygons(canvas_size, fov_degree=35):
+    """
+    Create FOV triangle mask.
+    Triangle exteriors = 1, interiors = 0
+    
+    Triangle vertices in array indices:
+    - (0, 100): bottom center (row 0, col 100)
+    - (100, 30): top left (row 100, col 30)
+    - (100, 170): top right (row 100, col 170)
+    
+    Returns:
+        mask of shape (100, 200) where:
+        - Inside triangle = 0
+        - Outside triangle = 1
+    """
+    import cv2
+    from shapely.geometry import Polygon
+    
+    # Create mask (100, 200)
+    mask = np.zeros((100, 200), dtype=np.uint8)
+    
+    # Triangle vertices as (col, row) for cv2 (x, y format)
+    # But you specified as array positions (row, col)
+    # Converting (row, col) -> (col, row) for cv2:
+    apex = (100, 0)      # array pos (0, 100) -> cv2 point (100, 0)
+    left_point = (30, 100)   # array pos (100, 30) -> cv2 point (30, 100)
+    right_point = (170, 100) # array pos (100, 170) -> cv2 point (170, 100)
+    
+    # Create triangle
+    triangle = np.array([apex, left_point, right_point], dtype=np.int32)
+    
+    # Fill triangle with 1
+    cv2.fillPoly(mask, [triangle], 1)
+    
+    # Invert: exteriors = 1, interiors = 0
+    mask = 1 - mask
+    
+    return mask
+def plot_image_and_lanes(image_paths, vectors, out_path="lane_vis.png", dpi=200):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    xlim = (-51.2, 51.2)
+    ylim = (-51.2, 51.2)
+
+    # ---- Plot 1: image ----
+    ax_img = axes[0]
+    img_path = f"/zihan-west-vol/UniAD/data/nuscenes/{image_paths[0]}"
+
+    if os.path.exists(img_path):
+        img = mpimg.imread(img_path)
+        ax_img.imshow(img)
+        ax_img.set_title("Front Image")
+    else:
+        ax_img.text(0.5, 0.5, f"Image not found:\n{img_path}", ha="center", va="center")
+        ax_img.set_title("Image (missing)")
+    ax_img.axis("off")
+
+    # ---- Plot 2: merged lanes by type with colors ----
+    ax = axes[1]
+    ax.set_title("Lanes (type 0/1/2 merged)")
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+
+    type_color = {0: "r", 1: "g", 2: "b"}
+    type_label = {0: "type 0", 1: "type 1", 2: "type 2"}
+    used_label = set()
+
+    for v in vectors:
+        t = int(v.get("type", -1))
+        if t not in type_color:
+            continue
+
+        pts = np.asarray(v["pts"])  # [N,2]
+        color = type_color[t]
+
+        # show legend only once per type
+        label = type_label[t] if t not in used_label else None
+        used_label.add(t)
+
+        ax.plot(pts[:, 0], pts[:, 1], color=color, linewidth=2, marker=".", markersize=3, label=label)
+        ax.scatter(pts[0, 0], pts[0, 1], color=color, s=20)
+
+    ax.legend(loc="upper right")
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+def plot_gt_masks(image_paths, gt_masks, gt_labels, out_path="mask_vis.png", dpi=200):
+    fig, axes = plt.subplots(3, 3, figsize=(22, 22))
+    if isinstance(gt_masks, torch.Tensor):
+        gt_masks = gt_masks.cpu().numpy()
+    if isinstance(gt_labels, torch.Tensor):
+        gt_labels = gt_labels.cpu().numpy()
+    ax_img = axes[0,0]
+    img_path = f"/zihan-west-vol/UniAD/data/nuscenes/{image_paths[0]}"
+    type_color = {0: "r", 1: "g", 2: "b", 3:"y", 4:"black",5: "gray"}
+    plot_position = {0:(0, 1), 1:(0, 2), 2:(1, 0), 3:(1, 1), 4:(1, 2),5:(2, 0)}
+    if os.path.exists(img_path):
+        img = mpimg.imread(img_path)
+        ax_img.imshow(img)
+        ax_img.set_title("Front Image")
+    else:
+        ax_img.text(0.5, 0.5, f"Image not found:\n{img_path}", ha="center", va="center")
+        ax_img.set_title("Image (missing)")
+    ax_img.axis("off")
+    h, w = gt_masks.shape[1], gt_masks.shape[2]
+    unique_labels = np.unique(gt_labels)
+    for label in unique_labels:
+        row, col = plot_position[label]
+        ax = axes[row, col]
+        class_indices = np.where(gt_labels == label)[0]
+        combined_mask = np.zeros((h, w), dtype=float)
+        for idx in class_indices:
+            combined_mask = np.maximum(combined_mask, gt_masks[idx])
+        ax.imshow(combined_mask, cmap='gray', vmin=0, vmax=1, 
+                 aspect='equal', origin='lower')
+        # ax.set_xlabel('X: [-51.2m, +51.2m]', fontsize=9)
+        # ax.set_ylabel('Y: [0m, 51.2m]', fontsize=9)
+        ax.set_xticks([0, w/2, w])
+        ax.set_xticklabels(['-51.2', '0', '+51.2'], fontsize=8)
+        ax.set_yticks([0, h/2, h])
+        ax.set_yticklabels(['-51.2', '0', '+51.2'], fontsize=8)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    
 
 @DATASETS.register_module()
 class NuScenesE2EDataset(NuScenesDataset):
@@ -72,7 +257,9 @@ class NuScenesE2EDataset(NuScenesDataset):
         # init before super init since it is called in parent class
         self.file_client_args = file_client_args
         self.file_client = mmcv.FileClient(**file_client_args)
-
+        intent_file = "/zihan-west-vol/UniAD/data/nuscenes/unified_label_outputs_v2/all_scenes_compact.json"
+        with open(intent_file, 'r') as f:
+            self.intent_data = json.load(f)
         self.is_debug = is_debug
         self.len_debug = len_debug
         super().__init__(*args, **kwargs)
@@ -266,6 +453,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         """
         imgs_list = [each['img'].data for each in queue]
         gt_labels_3d_list = [each['gt_labels_3d'].data for each in queue]
+        gt_labels_intent_list = [to_tensor(each['gt_labels_intent']) for each in queue]
         gt_sdc_label_list = [each['gt_sdc_label'].data for each in queue]
         gt_inds_list = [to_tensor(each['gt_inds']) for each in queue]
         gt_bboxes_3d_list = [each['gt_bboxes_3d'].data for each in queue]
@@ -311,6 +499,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         queue = queue[-1]
 
         queue['gt_labels_3d'] = DC(gt_labels_3d_list)
+        queue['gt_labels_intent'] = DC(gt_labels_intent_list)
         queue['gt_sdc_label'] = DC(gt_sdc_label_list)
         queue['gt_inds'] = DC(gt_inds_list)
         queue['gt_bboxes_3d'] = DC(gt_bboxes_3d_list, cpu_only=True)
@@ -344,6 +533,7 @@ class NuScenesE2EDataset(NuScenesDataset):
                 - gt_fut_traj_mask (np.ndarray): .
         """
         info = self.data_infos[index]
+        frame_idx = int(info['frame_idx'])
         # filter out bbox containing no points
         if self.use_valid_flag:
             mask = info['valid_flag']
@@ -352,7 +542,18 @@ class NuScenesE2EDataset(NuScenesDataset):
         gt_bboxes_3d = info['gt_boxes'][mask] 
         gt_names_3d = info['gt_names'][mask]
         gt_inds = info['gt_inds'][mask]
-
+        gt_tokens = info['gt_ins_tokens'][mask]
+        gt_labels_intent = []
+        agent_keys = self.intent_data[info['scene_token']].keys()
+        for gt_token in gt_tokens:
+            if gt_token not in agent_keys:
+                gt_labels_intent.append(-1)
+            else:
+                # print("find key")
+                intent_array = self.intent_data[info['scene_token']][gt_token]["labels"]
+                gt_labels_intent.append(intent_label(frame_idx, intent_array))
+        gt_labels_intent = np.array(gt_labels_intent)
+        # print(gt_labels_intent)
         sample = self.nusc.get('sample', info['token'])
         ann_tokens = np.array(sample['anns'])[mask]
         assert ann_tokens.shape[0] == gt_bboxes_3d.shape[0]
@@ -392,6 +593,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         anns_results = dict(
             gt_bboxes_3d=gt_bboxes_3d,
             gt_labels_3d=gt_labels_3d,
+            gt_labels_intent=gt_labels_intent,
             gt_names=gt_names_3d,
             gt_inds=gt_inds,
             gt_fut_traj=gt_fut_traj,
