@@ -86,9 +86,11 @@ def euler_to_rotation_matrix(roll, pitch, yaw):
 def parse_odom(filepath):
     """Parse a single odometry file → (x, y, z, roll, pitch, yaw)."""
     with open(filepath, 'r') as f:
-        vals = [float(v) for v in f.readline().strip().split(',')]
-    assert len(vals) == 6, f"Expected 6 values in {filepath}, got {len(vals)}"
-    return np.array(vals, dtype=np.float64)
+        parts = [v for v in f.readline().strip().split(',') if v]
+    if len(parts) != 6:
+        print(f"  WARNING: skipping bad odom {filepath}: got {len(parts)} values")
+        return None
+    return np.array([float(v) for v in parts], dtype=np.float64)
 
 
 def parse_label3d(filepath):
@@ -172,7 +174,9 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
     for fidx in frame_indices:
         odom_path = os.path.join(scenario_dir, f"odom_{fidx:04d}.txt")
         if os.path.exists(odom_path):
-            odom_data[fidx] = parse_odom(odom_path)
+            parsed = parse_odom(odom_path)
+            if parsed is not None:
+                odom_data[fidx] = parsed
 
     # Accumulate ego poses: first frame as origin
     # Odometry values appear to already be cumulative poses (positions grow)
