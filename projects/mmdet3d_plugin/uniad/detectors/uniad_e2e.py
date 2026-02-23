@@ -24,10 +24,12 @@ class UniAD(UniADTrack):
         motion_head=None,
         occ_head=None,
         planning_head=None,
+        intent_head=None,
         task_loss_weight=dict(
             track=1.0,
             map=1.0,
             motion=1.0,
+            intent=1.0,
             occ=1.0,
             planning=1.0
         ),
@@ -38,6 +40,8 @@ class UniAD(UniADTrack):
             self.seg_head = build_head(seg_head)
         if occ_head:
             self.occ_head = build_head(occ_head)
+        if intent_head:
+            self.intent_head = build_head(intent_head)
         if motion_head:
             self.motion_head = build_head(motion_head)
         if planning_head:
@@ -45,7 +49,7 @@ class UniAD(UniADTrack):
         
         self.task_loss_weight = task_loss_weight
         assert set(task_loss_weight.keys()) == \
-               {'track', 'occ', 'motion', 'map', 'planning'}
+               {'track', 'occ', 'motion', 'intent', 'map', 'planning'}
 
     @property
     def with_planning_head(self):
@@ -58,7 +62,9 @@ class UniAD(UniADTrack):
     @property
     def with_motion_head(self):
         return hasattr(self, 'motion_head') and self.motion_head is not None
-
+    @property
+    def with_intent_head(self):
+        return hasattr(self, 'intent_head') and self.intent_head is not None
     @property
     def with_seg_head(self):
         return hasattr(self, 'seg_head') and self.seg_head is not None
@@ -90,6 +96,7 @@ class UniAD(UniADTrack):
                       img_metas=None,
                       gt_bboxes_3d=None,
                       gt_labels_3d=None,
+                      gt_labels_intent=None,
                       gt_inds=None,
                       l2g_t=None,
                       l2g_r_mat=None,
@@ -182,6 +189,18 @@ class UniAD(UniADTrack):
             losses.update(losses_seg)
 
         outs_motion = dict()
+        # Forward Intent Head    
+        if self.with_intent_head:
+            ret_dict_intent = self.intent_head.forward_train(bev_embed,
+                                                         gt_labels_intent, 
+                                                         gt_labels_3d,
+                                                        outs_track=outs_track, outs_seg=outs_seg
+                                                    )
+            losses_intent = ret_dict_intent["losses"]
+            outs_intent = ret_dict_intent["outs_intent"]
+            outs_intent['bev_pos'] = bev_pos
+            losses_intent = self.loss_weighted_and_prefixed(losses_intent, prefix='intent')
+            losses.update(losses_intent)
         # Forward Motion Head
         if self.with_motion_head:
             ret_dict_motion = self.motion_head.forward_train(bev_embed,
@@ -298,7 +317,9 @@ class UniAD(UniADTrack):
 
         if self.with_seg_head:
             result_seg =  self.seg_head.forward_test(bev_embed, gt_lane_labels, gt_lane_masks, img_metas, rescale)
-
+        if self.with_intent_head:
+            result_intent, outs_intent = self.intent_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
+            outs_intent['bev_pos'] = result_track[0]['bev_pos']
         if self.with_motion_head:
             result_motion, outs_motion = self.motion_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
             outs_motion['bev_pos'] = result_track[0]['bev_pos']

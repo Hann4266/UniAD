@@ -370,6 +370,7 @@ class ObjectRangeFilterTrack(object):
 
         gt_bboxes_3d = input_dict['gt_bboxes_3d']
         gt_labels_3d = input_dict['gt_labels_3d']
+        gt_labels_intent = input_dict['gt_labels_intent']
         gt_inds = input_dict['gt_inds']
         gt_fut_traj = input_dict['gt_fut_traj']
         gt_fut_traj_mask = input_dict['gt_fut_traj_mask']
@@ -408,6 +409,7 @@ class ObjectRangeFilterTrack(object):
         # as gt_labels_3d[1] and cause out of index error
         mask = mask.numpy().astype(np.bool)
         gt_labels_3d = gt_labels_3d[mask]
+        gt_labels_intent = gt_labels_intent[mask]
         gt_inds = gt_inds[mask]
         gt_fut_traj = gt_fut_traj[mask]
         gt_fut_traj_mask = gt_fut_traj_mask[mask]
@@ -418,6 +420,7 @@ class ObjectRangeFilterTrack(object):
         gt_bboxes_3d.limit_yaw(offset=0.5, period=2 * np.pi)
         input_dict['gt_bboxes_3d'] = gt_bboxes_3d
         input_dict['gt_labels_3d'] = gt_labels_3d
+        input_dict['gt_labels_intent'] = gt_labels_intent
         input_dict['gt_inds'] = gt_inds
         input_dict['gt_fut_traj'] = gt_fut_traj
         input_dict['gt_fut_traj_mask'] = gt_fut_traj_mask
@@ -455,6 +458,7 @@ class ObjectNameFilterTrack(object):
                                   dtype=np.bool_)
         input_dict['gt_bboxes_3d'] = input_dict['gt_bboxes_3d'][gt_bboxes_mask]
         input_dict['gt_labels_3d'] = input_dict['gt_labels_3d'][gt_bboxes_mask]
+        input_dict['gt_labels_intent'] = input_dict['gt_labels_intent'][gt_bboxes_mask]
         input_dict['gt_inds'] = input_dict['gt_inds'][gt_bboxes_mask]
         input_dict['gt_fut_traj'] = input_dict['gt_fut_traj'][gt_bboxes_mask]
         input_dict['gt_fut_traj_mask'] = input_dict['gt_fut_traj_mask'][gt_bboxes_mask]

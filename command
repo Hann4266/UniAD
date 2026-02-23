@@ -18,7 +18,7 @@ pip install -U "numpy==1.21.6"
 
 kill -9 -f "python"
 CUDA_VISIBLE_DEVICES=1 ./tools/uniad_dist_train.sh ./projects/configs/stage1_track_map/base_track_map_front.py 1
-CUDA_VISIBLE_DEVICES=1 ./tools/uniad_dist_train.sh ./projects/configs/stage1_track_map/base_track_map.py 1
+CUDA_VISIBLE_DEVICES=1 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt.py 1
 eval:
 ./tools/uniad_dist_eval.sh ./projects/configs/stage1_track_map/base_track_map_front.py /zihan-west-vol/UniAD/projects/work_dirs/weights/stage1/0215/epoch_6.pth 2
 /zihan-west-vol/Uniad_FrontBEV/UniAD/projects/mmdet3d_plugin/datasets/eval_utils/nuscenes_eval.py

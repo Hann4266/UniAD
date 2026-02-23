@@ -556,7 +556,7 @@ data = dict(
 )
 optimizer = dict(
     type="AdamW",
-    lr=2e-4,
+    lr=4e-4, #2e-4
     paramwise_cfg=dict(
         custom_keys={
             "img_backbone": dict(lr_mult=0.1),
@@ -584,7 +584,7 @@ log_config = dict(
     interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook"), dict(
         type='UniADWandbHook',
         project='intent_predict',
-        name='stage1_track_map_front',
+        name='stage2_intent_front',
         interval=10,      # log every 10 iters (match your log_config interval)
         log_ckpt=True
     )]

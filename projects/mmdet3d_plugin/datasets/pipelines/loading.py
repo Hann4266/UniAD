@@ -127,12 +127,14 @@ class LoadAnnotations3D_E2E(LoadAnnotations3D):
                  with_future_anns=False,
                  with_ins_inds_3d=False,
                  ins_inds_add_1=False,  # NOTE: make ins_inds start from 1, not 0
+                 with_intent_label_3d=False,
                  **kwargs):
         super().__init__(**kwargs)
         self.with_future_anns = with_future_anns
         self.with_ins_inds_3d = with_ins_inds_3d
 
         self.ins_inds_add_1 = ins_inds_add_1
+        self.with_intent_label_3d = with_intent_label_3d 
     
     def _load_future_anns(self, results):
         """Private function to load 3D bounding box annotations.
@@ -191,9 +193,18 @@ class LoadAnnotations3D_E2E(LoadAnnotations3D):
         results['gt_inds'] = ann_gt_inds
         return results
 
+    def _load_intent_label_3d(self, results):
+        """Load intent labels from ann_info to top-level results."""
+        
+        gt_labels_intent = results['ann_info']['gt_labels_intent']
+        results['gt_labels_intent'] = gt_labels_intent
+
+        return results
+
     def __call__(self, results):
         results = super().__call__(results)
-        
+        if self.with_intent_label_3d:
+            results = self._load_intent_label_3d(results)
         if self.with_future_anns:
             results = self._load_future_anns(results)
         if self.with_ins_inds_3d:

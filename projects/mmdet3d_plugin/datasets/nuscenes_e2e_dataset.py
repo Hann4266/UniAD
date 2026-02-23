@@ -8,6 +8,7 @@ import copy
 import numpy as np
 import torch
 import mmcv
+import json
 from mmdet.datasets import DATASETS
 from mmdet.datasets.pipelines import to_tensor
 from mmdet3d.datasets import NuScenesDataset
@@ -37,6 +38,57 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import numpy as np
+def intent_label(index, action_array):
+    intent_dic={
+        "Crossing" : 2,
+        "TURN_RIGHT": 3,
+        "TURN_LEFT": 4,
+        "LANE_CHANGE_RIGHT": 5,
+        "LANE_CHANGE_LEFT": 6,
+        "STOPPED": 0,
+        "MOVING": 1,
+        "Stopped": 0,
+        "Moving": 1
+    }
+    if index < 0 or index >= len(action_array)-1:
+        return -1
+
+    action = action_array[index]
+
+    end = min(len(action_array), index + 5)
+    future_actions = action_array[index + 1:end]
+    if len(future_actions) == 0 or all(a == "na" for a in future_actions):
+        return -1
+
+    action_set = {"Crossing", "TURN_RIGHT", "TURN_LEFT", "LANE_CHANGE_RIGHT", "LANE_CHANGE_LEFT"}
+    
+    if action in action_set:
+        for next_action in future_actions:
+            if next_action != action and next_action!= "na":
+                return intent_dic[next_action]
+        return intent_dic[action]
+    elif action == "STOPPED" or action == "Stopped":
+        next_moving = False
+        for next_action in future_actions:
+            if next_action in action_set:
+                return intent_dic[next_action]
+            elif next_action=="MOVING" or next_action=="Moving":
+                next_moving = True
+        return intent_dic["MOVING"] if next_moving else intent_dic["STOPPED"]
+    elif action == "MOVING" or action == "Moving":
+        next_stop = False
+        for next_action in future_actions:
+            if next_action in action_set:
+                return intent_dic[next_action]
+            elif next_action=="STOPPED" or next_action == "Stopped":
+                next_moving = True
+        return intent_dic["STOPPED"] if next_stop else intent_dic["MOVING"]
+    else:
+        return -1
+
+        
+            
+
 def mask_for_polygons(canvas_size, fov_degree=35):
     """
     Create FOV triangle mask.
@@ -260,7 +312,9 @@ class NuScenesE2EDataset(NuScenesDataset):
         # init before super init since it is called in parent class
         self.file_client_args = file_client_args
         self.file_client = mmcv.FileClient(**file_client_args)
-
+        intent_file = "/zihan-west-vol/UniAD/data/nuscenes/unified_label_outputs_v2/all_scenes_compact.json"
+        with open(intent_file, 'r') as f:
+            self.intent_data = json.load(f)
         self.is_debug = is_debug
         self.len_debug = len_debug
         super().__init__(*args, **kwargs)
@@ -460,6 +514,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         """
         imgs_list = [each['img'].data for each in queue]
         gt_labels_3d_list = [each['gt_labels_3d'].data for each in queue]
+        gt_labels_intent_list = [to_tensor(each['gt_labels_intent']) for each in queue]
         gt_sdc_label_list = [each['gt_sdc_label'].data for each in queue]
         gt_inds_list = [to_tensor(each['gt_inds']) for each in queue]
         gt_bboxes_3d_list = [each['gt_bboxes_3d'].data for each in queue]
@@ -504,6 +559,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         queue = queue[-1]
 
         queue['gt_labels_3d'] = DC(gt_labels_3d_list)
+        queue['gt_labels_intent'] = DC(gt_labels_intent_list)
         queue['gt_sdc_label'] = DC(gt_sdc_label_list)
         queue['gt_inds'] = DC(gt_inds_list)
         queue['gt_bboxes_3d'] = DC(gt_bboxes_3d_list, cpu_only=True)
@@ -537,6 +593,7 @@ class NuScenesE2EDataset(NuScenesDataset):
                 - gt_fut_traj_mask (np.ndarray): .
         """
         info = self.data_infos[index]
+        frame_idx = int(info['frame_idx'])
         # filter out bbox containing no points
         if self.use_valid_flag:
             mask = info['valid_flag']
@@ -545,7 +602,18 @@ class NuScenesE2EDataset(NuScenesDataset):
         gt_bboxes_3d = info['gt_boxes'][mask]
         gt_names_3d = info['gt_names'][mask]
         gt_inds = info['gt_inds'][mask]
-
+        gt_tokens = info['gt_ins_tokens'][mask]
+        gt_labels_intent = []
+        agent_keys = self.intent_data[info['scene_token']].keys()
+        for gt_token in gt_tokens:
+            if gt_token not in agent_keys:
+                gt_labels_intent.append(-1)
+            else:
+                # print("find key")
+                intent_array = self.intent_data[info['scene_token']][gt_token]["labels"]
+                gt_labels_intent.append(intent_label(frame_idx, intent_array))
+        gt_labels_intent = np.array(gt_labels_intent)
+        # print(gt_labels_intent)
         sample = self.nusc.get('sample', info['token'])
         ann_tokens = np.array(sample['anns'])[mask]
         assert ann_tokens.shape[0] == gt_bboxes_3d.shape[0]
@@ -585,6 +653,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         anns_results = dict(
             gt_bboxes_3d=gt_bboxes_3d,
             gt_labels_3d=gt_labels_3d,
+            gt_labels_intent=gt_labels_intent,
             gt_names=gt_names_3d,
             gt_inds=gt_inds,
             gt_fut_traj=gt_fut_traj,

@@ -25,7 +25,6 @@ class_names = [
     "traffic_cone",
 ]
 vehicle_id_list = [0, 1, 2, 3, 4, 6, 7]
-group_id_list = [[0,1,2,3,4], [6,7], [8], [5,9]]
 input_modality = dict(
     use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True
 )
@@ -33,7 +32,7 @@ _dim_ = 256
 _pos_dim_ = _dim_ // 2
 _ffn_dim_ = _dim_ * 2
 _num_levels_ = 4
-bev_h_ = 200
+bev_h_ = 100
 bev_w_ = 200
 _feed_dim_ = _ffn_dim_
 _dim_half_ = _pos_dim_
@@ -331,128 +330,49 @@ model = dict(
             sampler_with_mask =dict(type='PseudoSampler_segformer'),
         ),
     ),
-    occ_head=dict(
-        type='OccHead',
-
-        grid_conf=occflow_grid_conf,
-        ignore_index=255,
-
-        bev_proj_dim=256,
-        bev_proj_nlayers=4,
-
-        # Transformer
-        attn_mask_thresh=0.3,
-        transformer_decoder=dict(
-            type='DetrTransformerDecoder',
-            return_intermediate=True,
-            num_layers=5,
-            transformerlayers=dict(
-                type='DetrTransformerDecoderLayer',
-                attn_cfgs=dict(
-                    type='MultiheadAttention',
-                    embed_dims=256,
-                    num_heads=8,
-                    attn_drop=0.0,
-                    proj_drop=0.0,
-                    dropout_layer=None,
-                    batch_first=False),
-                ffn_cfgs=dict(
-                    embed_dims=256,
-                    feedforward_channels=2048,  # change to 512
-                    num_fcs=2,
-                    act_cfg=dict(type='ReLU', inplace=True),
-                    ffn_drop=0.0,
-                    dropout_layer=None,
-                    add_identity=True),
-                feedforward_channels=2048,
-                operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
-                                 'ffn', 'norm')),
-            init_cfg=None),
-        # Query
-        query_dim=256,
-        query_mlp_layers=3,
-
-        aux_loss_weight=1.,
-        loss_mask=dict(
-            type='FieryBinarySegmentationLoss',
-            use_top_k=True,
-            top_k_ratio=0.25,
-            future_discount=0.95,
-            loss_weight=5.0,
-            ignore_index=255,
-        ),
-        loss_dice=dict(
-            type='DiceLossWithMasks',
-            use_sigmoid=True,
-            activate=True,
-            reduction='mean',
-            naive_dice=True,
-            eps=1.0,
-            ignore_index=255,
-            loss_weight=1.0),
-
-        
-        pan_eval=True,
-        test_seg_thresh=0.1,
-        test_with_track_score=True,
-    ),
-    motion_head=dict(
-        type='MotionHead',
+    intent_head=dict(
+        type='IntentHead',
         bev_h=bev_h_,
         bev_w=bev_w_,
-        num_query=300,
-        num_classes=10,
-        predict_steps=predict_steps,
-        predict_modes=predict_modes,
+        num_classes=7, # intent classes INT_STOP, INT_MOVING, INT_LCL, INT_LCR, INT_TL, INT_TR, INT_CROSS
         embed_dims=_dim_,
-        loss_traj=dict(type='TrajLoss', 
-            use_variance=True, 
-            cls_loss_weight=0.5, 	
-            nll_loss_weight=0.5, 	
-            loss_weight_minade=0., 	
-            loss_weight_minfde=0.25),
         num_cls_fcs=3,
+        det_layer_num=1, 
         pc_range=point_cloud_range,
-        group_id_list=group_id_list,
-        num_anchor=6,
-        use_nonlinear_optimizer=use_nonlinear_optimizer,
-        anchor_info_path='data/others/motion_anchor_infos_mode6.pkl',
+        vehicle_id_list=[0, 1, 2, 3, 4, 6, 7],
+        ped_id_list=[8],
+        ignore_id_list=[5, 9],
+        loss_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=False, 
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=1.0),
         transformerlayers=dict(
-            type='MotionTransformerDecoder',
+            type='IntentTransformerDecoder',   
             pc_range=point_cloud_range,
+            bev_h=bev_h_,
+            bev_w=bev_w_,
             embed_dims=_dim_,
             num_layers=3,
             transformerlayers=dict(
-                type='MotionTransformerAttentionLayer',
+                type='IntentTransformerAttentionLayer',
                 batch_first=True,
                 attn_cfgs=[
                     dict(
-                        type='MotionDeformableAttention',
-                        num_steps=predict_steps,
+                        type='IntentDeformableAttention',
                         embed_dims=_dim_,
                         num_levels=1,
                         num_heads=8,
-                        num_points=4,
-                        sample_index=-1),
+                        num_points=4),
                 ],
-
                 feedforward_channels=_ffn_dim_,
                 ffn_dropout=0.1,
-                operation_order=('cross_attn', 'norm', 'ffn', 'norm')),
+                operation_order=('cross_attn', 'norm', 'ffn', 'norm'),
+            ),
         ),
     ),
-    planning_head=dict(
-        type='PlanningHeadSingleMode',
-        embed_dims=256,
-        planning_steps=planning_steps,
-        loss_planning=dict(type='PlanningLoss'),
-        loss_collision=[dict(type='CollisionLoss', delta=0.0, weight=2.5),
-                        dict(type='CollisionLoss', delta=0.5, weight=1.0),
-                        dict(type='CollisionLoss', delta=1.0, weight=0.25)],
-        use_col_optim=use_col_optim,
-        planning_eval=True,
-        with_adapter=True,
-    ),
+
     # model training and testing settings
     train_cfg=dict(
         pts=dict(
@@ -493,6 +413,7 @@ train_pipeline = [
         with_future_anns=True,  # occ_flow gt
         with_ins_inds_3d=True,  # ins_inds 
         ins_inds_add_1=True,    # ins_inds start from 1
+        with_intent_label_3d=True,
     ),
 
     dict(type='GenerateOccFlowLabels', grid_conf=occflow_grid_conf, ignore_index=255, only_vehicle=True, 
@@ -508,6 +429,7 @@ train_pipeline = [
         keys=[
             "gt_bboxes_3d",
             "gt_labels_3d",
+            "gt_labels_intent",
             "gt_inds",
             "img",
             "timestamp",
@@ -640,7 +562,7 @@ data = dict(
         classes=class_names,
         modality=input_modality,
         samples_per_gpu=1,
-        eval_mod=['det', 'map', 'track','motion'],
+        eval_mod=['det', 'map', 'track','intent'],
         
 
         occ_receptive_field=3,
@@ -696,9 +618,15 @@ evaluation = dict(
 )
 runner = dict(type="EpochBasedRunner", max_epochs=total_epochs)
 log_config = dict(
-    interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook")]
+    interval=10, hooks=[dict(type="TextLoggerHook"), dict(type="TensorboardLoggerHook"),dict(
+        type='UniADWandbHook',
+        project='intent_predict',
+        name='stage1_track_map_front',
+        interval=10,      # log every 10 iters (match your log_config interval)
+        log_ckpt=True
+    )]
 )
 checkpoint_config = dict(interval=1)
-load_from = "ckpts/uniad_base_track_map.pth"
+load_from = "/zihan-west-vol/UniAD/projects/work_dirs/stage1_track_map/base_track_map_front/weights_stage1_lr_2e4/latest.pth"
 
 find_unused_parameters = True

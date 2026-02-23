@@ -94,7 +94,7 @@ class MotionTransformerAttentionLayer(BaseModule):
         if isinstance(attn_cfgs, dict):
             attn_cfgs = [copy.deepcopy(attn_cfgs) for _ in range(num_attn)]
         else:
-            assert num_attn == len(attn_cfgs), f'The length ' \
+            assert num_attn == lein(attn_cfgs), f'The length ' \
                 f'of attn_cfg {num_attn} is ' \
                 f'not consistent with the number of attention' \
                 f'in operation_order {operation_order}.'
