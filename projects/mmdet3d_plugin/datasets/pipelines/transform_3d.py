@@ -354,6 +354,8 @@ class ObjectRangeFilterTrack(object):
 
         if 'gt_inds' in input_dict['ann_info'].keys():
             input_dict['gt_inds'] = input_dict['ann_info']['gt_inds']
+        if 'gt_camera_visible' in input_dict['ann_info'].keys():
+            input_dict['gt_camera_visible'] = input_dict['ann_info']['gt_camera_visible']
         if 'gt_fut_traj' in input_dict['ann_info'].keys():
             input_dict['gt_fut_traj'] = input_dict['ann_info']['gt_fut_traj']
         if 'gt_fut_traj_mask' in input_dict['ann_info'].keys():
@@ -399,6 +401,8 @@ class ObjectRangeFilterTrack(object):
         input_dict['gt_fut_traj_mask'] = gt_fut_traj_mask
         input_dict['gt_past_traj'] = gt_past_traj
         input_dict['gt_past_traj_mask'] = gt_past_traj_mask
+        if 'gt_camera_visible' in input_dict:
+            input_dict['gt_camera_visible'] = input_dict['gt_camera_visible'][mask]
         return input_dict
 
     def __repr__(self):
@@ -436,6 +440,8 @@ class ObjectNameFilterTrack(object):
         input_dict['gt_fut_traj_mask'] = input_dict['gt_fut_traj_mask'][gt_bboxes_mask]
         input_dict['gt_past_traj'] = input_dict['gt_past_traj'][gt_bboxes_mask]
         input_dict['gt_past_traj_mask'] = input_dict['gt_past_traj_mask'][gt_bboxes_mask]
+        if 'gt_camera_visible' in input_dict:
+            input_dict['gt_camera_visible'] = input_dict['gt_camera_visible'][gt_bboxes_mask]
         return input_dict
 
     def __repr__(self):
@@ -484,12 +490,48 @@ class ObjectFOVFilterTrack(object):
         input_dict['gt_fut_traj_mask'] = input_dict['gt_fut_traj_mask'][mask]
         input_dict['gt_past_traj'] = input_dict['gt_past_traj'][mask]
         input_dict['gt_past_traj_mask'] = input_dict['gt_past_traj_mask'][mask]
+        if 'gt_camera_visible' in input_dict:
+            input_dict['gt_camera_visible'] = input_dict['gt_camera_visible'][mask]
         return input_dict
 
     def __repr__(self):
         repr_str = self.__class__.__name__
         repr_str += f'(half_fov={np.rad2deg(self.half_fov)*2:.1f}°)'
         return repr_str
+
+
+@PIPELINES.register_module()
+class ObjectCameraVisibleFilter(object):
+    """Filter GT objects by camera visibility using 2D label cross-reference.
+
+    Removes 3D GT objects that have no corresponding 2D bounding box in the
+    camera image (label2d). This filters out agents that are within the FOV
+    cone but fully occluded by other objects.
+
+    Requires ``gt_camera_visible`` (bool array) in the input dict, which is
+    pre-computed in create_loki_infos.py by matching label3d UUIDs against
+    label2d UUIDs.
+    """
+
+    def __call__(self, input_dict):
+        gt_bboxes_3d = input_dict['gt_bboxes_3d']
+        visible = input_dict.get('gt_camera_visible', None)
+        if visible is None or len(gt_bboxes_3d) == 0:
+            return input_dict
+
+        mask = visible.astype(bool)
+        input_dict['gt_bboxes_3d'] = gt_bboxes_3d[mask]
+        input_dict['gt_labels_3d'] = input_dict['gt_labels_3d'][mask]
+        input_dict['gt_inds'] = input_dict['gt_inds'][mask]
+        input_dict['gt_fut_traj'] = input_dict['gt_fut_traj'][mask]
+        input_dict['gt_fut_traj_mask'] = input_dict['gt_fut_traj_mask'][mask]
+        input_dict['gt_past_traj'] = input_dict['gt_past_traj'][mask]
+        input_dict['gt_past_traj_mask'] = input_dict['gt_past_traj_mask'][mask]
+        input_dict['gt_camera_visible'] = visible[mask]
+        return input_dict
+
+    def __repr__(self):
+        return self.__class__.__name__
 
 
 @PIPELINES.register_module()

@@ -258,6 +258,7 @@ class LokiE2EDataset(Custom3DDataset):
         gt_bboxes_3d = info['gt_boxes'][mask]
         gt_names_3d = info['gt_names'][mask]
         gt_inds = info['gt_inds'][mask]
+        gt_camera_visible = info.get('gt_camera_visible', np.ones(len(info['gt_boxes']), dtype=bool))[mask]
 
         # Map pkl lowercase names to config capitalized names
         gt_labels_3d = []
@@ -328,6 +329,7 @@ class LokiE2EDataset(Custom3DDataset):
             gt_labels_3d=gt_labels_3d,
             gt_names=gt_names_3d,
             gt_inds=gt_inds,  # Will be POPPED by LoadAnnotations3D_E2E (fixes BUG #2)
+            gt_camera_visible=gt_camera_visible,
             gt_fut_traj=gt_fut_traj,
             gt_fut_traj_mask=gt_fut_traj_mask,
             gt_past_traj=gt_past_traj,
@@ -419,6 +421,10 @@ class LokiE2EDataset(Custom3DDataset):
             input_dict['sdc_planning'] = annos['sdc_planning']
             input_dict['sdc_planning_mask'] = annos['sdc_planning_mask']
             input_dict['command'] = annos['command']
+
+        # Camera visibility flag (for ObjectCameraVisibleFilter)
+        if 'gt_camera_visible' in annos:
+            input_dict['gt_camera_visible'] = annos['gt_camera_visible']
 
         # can_bus: position [:3] is in global frame (unchanged).
         # Yaw [-1] is ego heading in global frame (unchanged).

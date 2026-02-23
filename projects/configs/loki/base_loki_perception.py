@@ -322,6 +322,8 @@ train_pipeline = [
     dict(type="ObjectNameFilterTrack", classes=class_names),
     # LOKI: single front camera with 60° FOV — remove GT outside FOV
     dict(type="ObjectFOVFilterTrack", fov_deg=60.0),
+    # LOKI: remove 3D GT objects with no corresponding 2D bbox (occluded from camera)
+    dict(type="ObjectCameraVisibleFilter"),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
     # Use standard DefaultFormatBundle3D (no gt_map_masks needed)
