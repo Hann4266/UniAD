@@ -296,6 +296,9 @@ class LokiE2EDataset(Custom3DDataset):
 
         # Zero-filled trajectories (NuScenes uses traj_api.get_traj_label)
         n_valid = len(gt_labels_3d)
+        # Intent labels are unavailable in LOKI. Keep a dummy vector so
+        # UniAD pipeline transforms that expect this key remain compatible.
+        gt_labels_intent = np.zeros((n_valid,), dtype=np.int64)
         gt_fut_traj = np.zeros((n_valid, self.predict_steps, 2), dtype=np.float32)
         gt_fut_traj_mask = np.zeros((n_valid, self.predict_steps, 2), dtype=np.float32)
         gt_past_traj = np.zeros((n_valid, self.past_steps + self.fut_steps, 2), dtype=np.float32)
@@ -327,6 +330,7 @@ class LokiE2EDataset(Custom3DDataset):
         return dict(
             gt_bboxes_3d=gt_bboxes_3d,
             gt_labels_3d=gt_labels_3d,
+            gt_labels_intent=gt_labels_intent,
             gt_names=gt_names_3d,
             gt_inds=gt_inds,  # Will be POPPED by LoadAnnotations3D_E2E (fixes BUG #2)
             gt_camera_visible=gt_camera_visible,

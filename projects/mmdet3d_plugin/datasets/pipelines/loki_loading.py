@@ -137,7 +137,8 @@ class LoadLokiAnnotations3D(object):
             results['gt_inds'] = gt_inds
 
         # Trajectory placeholders
-        for key in ['gt_fut_traj', 'gt_fut_traj_mask',
+        for key in ['gt_labels_intent',
+                     'gt_fut_traj', 'gt_fut_traj_mask',
                      'gt_past_traj', 'gt_past_traj_mask',
                      'gt_sdc_fut_traj', 'gt_sdc_fut_traj_mask']:
             if key in ann_info:
