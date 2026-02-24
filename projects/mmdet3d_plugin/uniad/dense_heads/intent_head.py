@@ -46,6 +46,7 @@ class IntentHead(BaseIntentHead):
         self.num_intent = num_intent
         self.bev_h = bev_h
         self.bev_w = bev_w
+
         self.num_cls_fcs = num_cls_fcs - 1
         self.embed_dims = embed_dims        
         self.pc_range = pc_range
@@ -87,9 +88,11 @@ class IntentHead(BaseIntentHead):
         track_boxes[0][1] = torch.cat([track_boxes[0][1], sdc_track_boxes[0][1]], dim=0)
         track_boxes[0][2] = torch.cat([track_boxes[0][2], sdc_track_boxes[0][2]], dim=0)
         track_boxes[0][3] = torch.cat([track_boxes[0][3], sdc_track_boxes[0][3]], dim=0)
-        
-        memory, memory_mask, memory_pos, lane_query, _, lane_query_pos, hw_lvl = outs_seg['args_tuple']
-        outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
+        if outs_seg != {}:
+            memory, memory_mask, memory_pos, lane_query, _, lane_query_pos, hw_lvl = outs_seg['args_tuple']
+            outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
+        else:
+            outs_intent = self(bev_embed, track_query, None, None, track_boxes)
         losses = self.loss(
             preds_dicts_intent=outs_intent,
             matched_idxes=all_matched_idxes,
@@ -146,7 +149,7 @@ class IntentHead(BaseIntentHead):
             lane_query_pos=lane_query_pos,
             track_bbox_results=track_bbox_results,
             bev_embed=bev_embed,
-            reference_points_track=reference_points_track
+            reference_points_track=reference_points_track,
             )
 
         for lid in range(inter_states.shape[0]):

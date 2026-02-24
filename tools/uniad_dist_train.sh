@@ -5,7 +5,8 @@ T=`date +%m%d%H%M`
 # -------------------------------------------------- #
 # Usually you only need to customize these variables #
 CFG=$1                                               #
-GPUS=$2                                              #
+GPUS=$2     
+                                       #
 # -------------------------------------------------- #
 GPUS_PER_NODE=$(($GPUS<8?$GPUS:8))
 NNODES=`expr $GPUS / $GPUS_PER_NODE`
