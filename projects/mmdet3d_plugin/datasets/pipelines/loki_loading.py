@@ -257,3 +257,53 @@ class GenerateDummyOccLabels(object):
         return (f'{self.__class__.__name__}('
                 f'bev_h={self.bev_h}, bev_w={self.bev_w}, '
                 f'n_future={self.n_future})')
+
+
+@PIPELINES.register_module()
+class PadToMultiCamera(object):
+    """Pad single-camera Loki data to multi-camera format for nuScenes-trained models.
+
+    The nuScenes BEVFormer model expects 6 camera views. This transform pads
+    a single Loki front camera to 6 slots by filling the remaining 5 with
+    black images and identity/zero transform matrices.
+
+    BEV queries in the front region primarily attend to the front camera via
+    deformable attention. The 5 dummy cameras produce near-zero backbone
+    features and contribute negligibly to the BEV.
+
+    Args:
+        target_num_cams (int): Number of camera slots. Default: 6.
+    """
+
+    def __init__(self, target_num_cams=6):
+        self.target_num_cams = target_num_cams
+
+    def __call__(self, results):
+        num_existing = len(results['img'])
+        num_pad = self.target_num_cams - num_existing
+
+        if num_pad <= 0:
+            return results
+
+        # Pad images with black images matching front camera shape
+        front_img = results['img'][0]
+        h, w = front_img.shape[:2]
+        c = front_img.shape[2] if len(front_img.shape) == 3 else 1
+        black = np.zeros_like(front_img)
+        results['img'] = results['img'] + [black.copy() for _ in range(num_pad)]
+
+        # Pad img_shape, ori_shape, pad_shape
+        for key in ['img_shape', 'ori_shape', 'pad_shape']:
+            if key in results and isinstance(results[key], list):
+                results[key] = results[key] + [results[key][0]] * num_pad
+
+        # Pad transform matrices with identity 4x4 for dummy cameras
+        identity_4x4 = np.eye(4, dtype=np.float64)
+        for key in ['lidar2img', 'lidar2cam', 'cam_intrinsic']:
+            if key in results and isinstance(results[key], list):
+                results[key] = results[key] + [identity_4x4.copy() for _ in range(num_pad)]
+
+        return results
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}(target_num_cams={self.target_num_cams})'

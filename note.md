@@ -17,6 +17,18 @@ cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distribut
     --cfg-options log_config.interval=1 \
     2>&1 | tee projects/work_dirs/loki/base_loki_perception/train_$(date +%Y%m%d_%H%M%S).log
 
+### Running Nuscenes model zero-shot inference
+cd /mnt/storage/UniAD && \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$(pwd):$PYTHONPATH \
+python -m torch.distributed.launch --nproc_per_node=1 --master_port=29601 \
+tools/test.py \
+projects/configs/loki/loki_nuscenes_zeroshot.py \
+work_dirs/zihan_nuscenes_weight/epoch_6.pth \
+--launcher pytorch \
+--out work_dirs/nuscenes_on_loki/results_zeroshot.pkl \
+--tmpdir /tmp/uniad_zeroshot_collect \
+--cfg-options data.workers_per_gpu=1
+
 ### Running test
 cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distributed.launch \
     --nproc_per_node=8 \

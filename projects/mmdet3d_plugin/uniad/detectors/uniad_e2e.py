@@ -354,7 +354,12 @@ class UniAD(UniADTrack):
         result_track[0] = pop_elem_in_result(result_track[0], pop_track_list)
 
         if self.with_seg_head:
-            result_seg[0] = pop_elem_in_result(result_seg[0], pop_list=['pts_bbox', 'args_tuple'])
+            result_seg[0] = pop_elem_in_result(result_seg[0], pop_list=['args_tuple'])
+            # Move map prediction tensors to CPU to avoid OOM accumulation
+            if 'pts_bbox' in result_seg[0]:
+                for k, v in result_seg[0]['pts_bbox'].items():
+                    if hasattr(v, 'cpu'):
+                        result_seg[0]['pts_bbox'][k] = v.cpu()
         if self.with_motion_head:
             result_motion[0] = pop_elem_in_result(result_motion[0])
         if self.with_occ_head:

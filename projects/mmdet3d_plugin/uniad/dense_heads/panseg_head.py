@@ -1020,39 +1020,54 @@ class PansegformerHead(SegDETRHead):
                                            img_metas,
                                            rescale=rescale)
 
+        # Check if GT lane masks are available (LOKI has no map GT)
+        has_gt_lanes = (gt_lane_masks is not None
+                        and len(gt_lane_masks) > 0
+                        and gt_lane_masks[0].numel() > 0)
+
         with torch.no_grad():
-            drivable_pred = results[0]['drivable']
-            drivable_gt = gt_lane_masks[0][0, -1]
-            drivable_iou, drivable_intersection, drivable_union = IOU(drivable_pred.view(1, -1), drivable_gt.view(1, -1))
+            if has_gt_lanes:
+                drivable_pred = results[0]['drivable']
+                drivable_gt = gt_lane_masks[0][0, -1]
+                drivable_iou, drivable_intersection, drivable_union = IOU(drivable_pred.view(1, -1), drivable_gt.view(1, -1))
 
-            lane_pred = results[0]['lane']
-            lanes_pred = (results[0]['lane'].sum(0) > 0).int()
-            lanes_gt = (gt_lane_masks[0][0][:-1].sum(0) > 0).int()
-            lanes_iou, lanes_intersection, lanes_union = IOU(lanes_pred.view(1, -1), lanes_gt.view(1, -1))
+                lane_pred = results[0]['lane']
+                lanes_pred = (results[0]['lane'].sum(0) > 0).int()
+                lanes_gt = (gt_lane_masks[0][0][:-1].sum(0) > 0).int()
+                lanes_iou, lanes_intersection, lanes_union = IOU(lanes_pred.view(1, -1), lanes_gt.view(1, -1))
 
-            divider_gt = (gt_lane_masks[0][0][gt_lane_labels[0][0] == 0].sum(0) > 0).int()
-            crossing_gt = (gt_lane_masks[0][0][gt_lane_labels[0][0] == 1].sum(0) > 0).int()
-            contour_gt = (gt_lane_masks[0][0][gt_lane_labels[0][0] == 2].sum(0) > 0).int()
-            divider_iou, divider_intersection, divider_union = IOU(lane_pred[0].view(1, -1), divider_gt.view(1, -1))
-            crossing_iou, crossing_intersection, crossing_union = IOU(lane_pred[1].view(1, -1), crossing_gt.view(1, -1))
-            contour_iou, contour_intersection, contour_union = IOU(lane_pred[2].view(1, -1), contour_gt.view(1, -1))
+                divider_gt = (gt_lane_masks[0][0][gt_lane_labels[0][0] == 0].sum(0) > 0).int()
+                crossing_gt = (gt_lane_masks[0][0][gt_lane_labels[0][0] == 1].sum(0) > 0).int()
+                contour_gt = (gt_lane_masks[0][0][gt_lane_labels[0][0] == 2].sum(0) > 0).int()
+                divider_iou, divider_intersection, divider_union = IOU(lane_pred[0].view(1, -1), divider_gt.view(1, -1))
+                crossing_iou, crossing_intersection, crossing_union = IOU(lane_pred[1].view(1, -1), crossing_gt.view(1, -1))
+                contour_iou, contour_intersection, contour_union = IOU(lane_pred[2].view(1, -1), contour_gt.view(1, -1))
 
-
-            ret_iou = {'drivable_intersection': drivable_intersection,
-                       'drivable_union': drivable_union,
-                       'lanes_intersection': lanes_intersection,
-                       'lanes_union': lanes_union,
-                       'divider_intersection': divider_intersection,
-                       'divider_union': divider_union,
-                       'crossing_intersection': crossing_intersection,
-                       'crossing_union': crossing_union,
-                       'contour_intersection': contour_intersection,
-                       'contour_union': contour_union,
-                       'drivable_iou': drivable_iou,
-                       'lanes_iou': lanes_iou,
-                       'divider_iou': divider_iou,
-                       'crossing_iou': crossing_iou,
-                       'contour_iou': contour_iou}
+                ret_iou = {'drivable_intersection': drivable_intersection,
+                           'drivable_union': drivable_union,
+                           'lanes_intersection': lanes_intersection,
+                           'lanes_union': lanes_union,
+                           'divider_intersection': divider_intersection,
+                           'divider_union': divider_union,
+                           'crossing_intersection': crossing_intersection,
+                           'crossing_union': crossing_union,
+                           'contour_intersection': contour_intersection,
+                           'contour_union': contour_union,
+                           'drivable_iou': drivable_iou,
+                           'lanes_iou': lanes_iou,
+                           'divider_iou': divider_iou,
+                           'crossing_iou': crossing_iou,
+                           'contour_iou': contour_iou}
+            else:
+                _zero = torch.tensor(0.0)
+                ret_iou = {k: _zero for k in [
+                    'drivable_intersection', 'drivable_union',
+                    'lanes_intersection', 'lanes_union',
+                    'divider_intersection', 'divider_union',
+                    'crossing_intersection', 'crossing_union',
+                    'contour_intersection', 'contour_union',
+                    'drivable_iou', 'lanes_iou',
+                    'divider_iou', 'crossing_iou', 'contour_iou']}
         for result_dict, pts_bbox in zip(bbox_list, results):
             result_dict['pts_bbox'] = pts_bbox
             result_dict['ret_iou'] = ret_iou
@@ -1286,7 +1301,11 @@ class PansegformerHead(SegDETRHead):
                     results[1, _mask] = id_unique
                     id_unique += 1
 
-            file_name = img_metas[img_id]['pts_filename'].split('/')[-1].split('.')[0]
+            pts_fn = img_metas[img_id].get('pts_filename', None)
+            if pts_fn is not None:
+                file_name = pts_fn.split('/')[-1].split('.')[0]
+            else:
+                file_name = img_metas[img_id].get('sample_idx', f'sample_{img_id}')
             panoptic_list.append(
                 (results.permute(1, 2, 0).cpu().numpy(), file_name, ori_shape))
 
