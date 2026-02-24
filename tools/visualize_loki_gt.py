@@ -4,10 +4,15 @@ Visualize LOKI ground truth data to verify dataset loader correctness.
 
 Produces for each sampled frame:
   1. Camera view  – front image with 2D bounding boxes from label2d files
-                    showing KEPT vs FILTERED status
+                    showing relation to 3D filtering stages
   2. BEV view     – bird's-eye-view with oriented 3D boxes in the rotated
                     lidar frame (x=right, y=forward), range boundary, and
                     60° FOV cone overlay
+
+Filtering stages shown:
+  - Range filter (point cloud range)
+  - FOV filter (front-camera cone)
+  - Camera-visibility filter (`gt_camera_visible`, i.e. 3D box has matching 2D ID)
 
 Usage:
     python tools/visualize_loki_gt.py \
@@ -163,6 +168,41 @@ def corners_3d_bottom(box):
     return rotated
 
 
+def box_corners_3d(box):
+    """8 corners of a 3D box. box: [x,y,z,dx,dy,dz,yaw,...]. Returns (8,3)."""
+    x, y, z, dx, dy, dz, yaw = box[:7]
+    hdx, hdy, hdz = dx / 2.0, dy / 2.0, dz / 2.0
+    local = np.array([
+        [-hdx, -hdy, -hdz], [-hdx, -hdy,  hdz],
+        [-hdx,  hdy, -hdz], [-hdx,  hdy,  hdz],
+        [ hdx, -hdy, -hdz], [ hdx, -hdy,  hdz],
+        [ hdx,  hdy, -hdz], [ hdx,  hdy,  hdz],
+    ], dtype=np.float64)
+    c, s = np.cos(yaw), np.sin(yaw)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    return (R @ local.T).T + np.array([x, y, z], dtype=np.float64)
+
+
+def project_box_to_2d(box, lidar2img, img_w, img_h):
+    """Project 3D box to axis-aligned 2D bbox. Returns (x1,y1,x2,y2) or None."""
+    corners = box_corners_3d(box)
+    pts_h = np.concatenate([corners, np.ones((8, 1))], axis=1)
+    proj = (lidar2img @ pts_h.T).T
+    depth = proj[:, 2]
+    valid = depth > 0.1
+    if not np.any(valid):
+        return None
+    u = proj[valid, 0] / depth[valid]
+    v = proj[valid, 1] / depth[valid]
+    x1 = float(np.clip(u.min(), 0, img_w - 1))
+    y1 = float(np.clip(v.min(), 0, img_h - 1))
+    x2 = float(np.clip(u.max(), 0, img_w - 1))
+    y2 = float(np.clip(v.max(), 0, img_h - 1))
+    if (x2 - x1) < 1 or (y2 - y1) < 1:
+        return None
+    return (x1, y1, x2, y2)
+
+
 def parse_label3d_raw(filepath):
     """Parse a raw label3d file for cross-checking track IDs."""
     annotations = []
@@ -176,10 +216,14 @@ def parse_label3d_raw(filepath):
             continue
         reader = csv.reader(io.StringIO(line))
         parts = next(reader)
-        if len(parts) < 10:
+        if len(parts) < 14:
+            continue
+        raw_class = parts[0].strip()
+        if raw_class not in LOKI_CLASS_MAP:
             continue
         annotations.append(dict(
-            label=parts[0].strip(),
+            label=raw_class,
+            mapped=LOKI_CLASS_MAP[raw_class],
             track_id=parts[1].strip(),
         ))
     return annotations
@@ -205,17 +249,28 @@ def draw_2d_box_on_image(ax, box, color, label=None, linewidth=2.0):
                 ha='left', va='bottom')
 
 
+def draw_2d_rect_on_image(ax, x1, y1, x2, y2, color,
+                          label=None, linewidth=2.0, linestyle='-', alpha=0.85):
+    """Draw a 2D rectangle from projected corners."""
+    rect = Rectangle((x1, y1), x2 - x1, y2 - y1,
+                     linewidth=linewidth, edgecolor=color,
+                     facecolor='none', linestyle=linestyle, alpha=alpha)
+    ax.add_patch(rect)
+    if label is not None:
+        ax.text(x1, y1 - 3, label, fontsize=6, color=color,
+                bbox=dict(boxstyle='round,pad=0.15',
+                          facecolor='black', alpha=0.6),
+                ha='left', va='bottom')
+
+
 def draw_bev_box(ax, box, color, label=None, linewidth=1.2):
     """Draw an oriented rectangle in BEV (top-down XY plane)."""
     bottom = corners_3d_bottom(box)
     poly = plt.Polygon(bottom, closed=True, fill=False,
                        edgecolor=color, linewidth=linewidth, alpha=0.9)
     ax.add_patch(poly)
-    cx, cy = box[0], box[1]
-    front_mid = (bottom[2] + bottom[3]) / 2
-    ax.annotate('', xy=front_mid, xytext=(cx, cy),
-                arrowprops=dict(arrowstyle='->', color=color, lw=1.0))
     if label:
+        cx, cy = box[0], box[1]
         ax.text(cx, cy - 1.0, label, fontsize=5, color=color,
                 ha='center', va='top', alpha=0.7)
 
@@ -257,7 +312,7 @@ def draw_fov_cone(ax, fov_deg, max_range=55.0):
 # ------------------------------------------------------------------ #
 def visualize_single_frame(info, data_root, out_dir, frame_num,
                            pc_range=POINT_CLOUD_RANGE, fov_deg=60.0):
-    """Visualize a single frame with range + FOV filtering.
+    """Visualize a single frame with range + FOV + camera-visible filtering.
 
     BEV is shown in the rotated lidar frame (x=right, y=forward)
     to match the training coordinate system.
@@ -266,14 +321,41 @@ def visualize_single_frame(info, data_root, out_dir, frame_num,
     img_path = info['img_filename'].replace(
         '/mnt/storage/loki_data', data_root.rstrip('/'))
     if not os.path.exists(img_path):
-        return False, 0, 0, 0
+        return False, 0, 0, 0, 0, 0
 
     img = np.array(Image.open(img_path))
-    gt_boxes_orig = info['gt_boxes']
-    gt_names = info['gt_names']
+    gt_boxes_all = info['gt_boxes']
+    gt_names_all = np.asarray(info['gt_names'])
+    gt_visible_all = np.asarray(
+        info.get('gt_camera_visible', np.ones(len(gt_boxes_all), dtype=bool))
+    ).astype(bool)
+    valid_flag_all = np.asarray(
+        info.get('valid_flag', np.ones(len(gt_boxes_all), dtype=bool))
+    ).astype(bool)
+    if len(valid_flag_all) != len(gt_boxes_all):
+        valid_flag_all = np.ones(len(gt_boxes_all), dtype=bool)
+    if len(gt_visible_all) != len(gt_boxes_all):
+        gt_visible_all = np.ones(len(gt_boxes_all), dtype=bool)
+
+    gt_boxes_orig = gt_boxes_all[valid_flag_all]
+    gt_names = gt_names_all[valid_flag_all]
+    gt_visible = gt_visible_all[valid_flag_all]
+
     scenario = info.get('scenario', '?')
     frame_idx = info.get('frame_idx', '?')
     fid_str = f"{frame_idx:04d}" if isinstance(frame_idx, int) else str(frame_idx)
+
+    # Track IDs from raw label3d for 3D<->2D correspondence checks
+    raw_label3d_path = os.path.join(data_root, scenario, f"label3d_{fid_str}.txt")
+    track_ids = np.array([''] * len(gt_boxes_orig), dtype=object)
+    if os.path.exists(raw_label3d_path):
+        raw_anns_3d = parse_label3d_raw(raw_label3d_path)
+        raw_track_ids = np.array([ann['track_id'] for ann in raw_anns_3d], dtype=object)
+        if len(raw_track_ids) == len(gt_boxes_all):
+            track_ids = raw_track_ids[valid_flag_all]
+        else:
+            n_align = min(len(raw_track_ids), len(track_ids))
+            track_ids[:n_align] = raw_track_ids[:n_align]
 
     # 2. Apply 90° CCW rotation (same as dataset loader)
     gt_boxes_rot = rotate_boxes_90ccw(gt_boxes_orig)
@@ -292,60 +374,134 @@ def visualize_single_frame(info, data_root, out_dir, frame_num,
     # 4. FOV filter in rotated frame
     mask_fov = fov_mask(gt_boxes_rot, fov_deg=fov_deg)
 
-    # 5. Combined mask
-    mask_kept = mask_range & mask_fov if n_total > 0 else np.array([], dtype=bool)
+    # 5. Camera-visibility filter (from pkl)
+    if n_total > 0:
+        if len(gt_visible) != n_total:
+            gt_visible = np.ones(n_total, dtype=bool)
+        mask_visible = gt_visible.astype(bool)
+    else:
+        mask_visible = np.array([], dtype=bool)
+
+    # 6. Combined masks by stage
+    mask_after_fov = mask_range & mask_fov if n_total > 0 else np.array([], dtype=bool)
+    mask_visibility_filtered = (
+        mask_after_fov & ~mask_visible if n_total > 0 else np.array([], dtype=bool))
+    mask_kept = (
+        mask_after_fov & mask_visible if n_total > 0 else np.array([], dtype=bool))
 
     n_kept = int(mask_kept.sum()) if n_total > 0 else 0
     n_range_only = int((~mask_range).sum()) if n_total > 0 else 0
     n_fov_only = int((mask_range & ~mask_fov).sum()) if n_total > 0 else 0
+    n_visibility_only = int(mask_visibility_filtered.sum()) if n_total > 0 else 0
 
-    # 6. Match track IDs (for camera view 2D→3D correspondence)
-    kept_ids = set()
-    raw_label3d_path = os.path.join(data_root, scenario, f"label3d_{fid_str}.txt")
-    if os.path.exists(raw_label3d_path) and n_total > 0:
-        raw_anns_3d = parse_label3d_raw(raw_label3d_path)
-        for i in range(min(len(mask_kept), len(raw_anns_3d))):
-            if mask_kept[i]:
-                kept_ids.add(raw_anns_3d[i]['track_id'])
+    # 7. Load 2D labels and cross-check camera visibility flags by track ID
+    label2d_path = os.path.join(data_root, scenario, f"label2d_{fid_str}.json")
+    anns_2d = parse_label2d_raw(label2d_path) if os.path.exists(label2d_path) else []
+    ids_2d = set(ann['track_id'] for ann in anns_2d)
+    mask_visible_from_2d = np.array(
+        [(tid in ids_2d) if tid else False for tid in track_ids], dtype=bool
+    ) if n_total > 0 else np.array([], dtype=bool)
+    mask_visibility_mismatch = (
+        mask_visible_from_2d ^ mask_visible if n_total > 0 else np.array([], dtype=bool))
+    n_visibility_mismatch = int(mask_visibility_mismatch.sum()) if n_total > 0 else 0
 
-    # 7. Figure layout
+    # 8. Track-ID groups for camera panel statuses
+    ids_kept = set(track_ids[mask_kept].tolist()) if n_total > 0 else set()
+    ids_fov_filtered = set(track_ids[mask_range & ~mask_fov].tolist()) if n_total > 0 else set()
+    ids_range_filtered = set(track_ids[~mask_range].tolist()) if n_total > 0 else set()
+    ids_visibility_filtered = (
+        set(track_ids[mask_visibility_filtered].tolist()) if n_total > 0 else set())
+    ids_mismatch = set(track_ids[mask_visibility_mismatch].tolist()) if n_total > 0 else set()
+    ids_all_3d = set([tid for tid in track_ids.tolist() if tid])
+    ids_no2d_filtered = [tid for tid in track_ids[mask_visibility_filtered].tolist() if tid]
+
+    # 9. Figure layout
     fig = plt.figure(figsize=(24, 10), facecolor='#1a1a2e')
     fig.suptitle(
         f"LOKI GT: {scenario} | Frame {frame_idx}  "
-        f"({n_kept}/{n_total} kept, {n_fov_only} FOV-filtered, "
-        f"{n_range_only} range-filtered)",
+        f"({n_kept}/{n_total} final-kept, {n_visibility_only} no2D-filtered, "
+        f"{n_fov_only} FOV-filtered, {n_range_only} range-filtered)",
         fontsize=14, color='white', y=0.96)
 
     # --- Panel 1: Camera View ---
     ax_cam = fig.add_axes([0.02, 0.05, 0.47, 0.85])
     ax_cam.imshow(img)
-    ax_cam.set_title("Camera View (2D labels + filter status)", color='white')
+    ax_cam.set_title("Camera View (2D labels + projected no2D-filtered 3D boxes)",
+                     color='white')
     ax_cam.axis('off')
 
-    label2d_path = os.path.join(data_root, scenario, f"label2d_{fid_str}.json")
-    if os.path.exists(label2d_path):
-        anns_2d = parse_label2d_raw(label2d_path)
-        for ann in anns_2d:
-            cls, tid = ann['mapped'], ann['track_id']
-            is_kept = tid in kept_ids
-            color = CLASS_COLORS.get(cls, CLASS_COLORS['unknown'])
+    for ann in anns_2d:
+        cls, tid = ann['mapped'], ann['track_id']
+        color_cls = CLASS_COLORS.get(cls, CLASS_COLORS['unknown'])
+        if tid not in ids_all_3d:
+            # Skip 2D-only annotations (no corresponding 3D GT in this frame).
+            continue
 
-            if is_kept:
-                draw_2d_box_on_image(ax_cam, ann['box'], color,
-                                     label=f"{cls} [KEPT]", linewidth=2.5)
-            else:
-                draw_2d_box_on_image(ax_cam, ann['box'], (0.8, 0.2, 0.2),
-                                     label=f"{cls} [FILTERED]", linewidth=1.0)
-                b = ann['box']
-                cx = float(b['left']) + float(b['width']) / 2
-                cy = float(b['top']) + float(b['height']) / 2
-                ax_cam.plot(cx, cy, 'x', color='red', markersize=10, alpha=0.6)
+        if tid in ids_mismatch:
+            draw_2d_box_on_image(ax_cam, ann['box'], (0.2, 1.0, 1.0),
+                                 label=f"{cls} [VIS-MISMATCH]", linewidth=2.0)
+        elif tid in ids_kept:
+            draw_2d_box_on_image(ax_cam, ann['box'], color_cls,
+                                 label=f"{cls} [3D KEPT]", linewidth=2.5)
+        elif tid in ids_fov_filtered:
+            draw_2d_box_on_image(ax_cam, ann['box'], (1.0, 0.5, 0.0),
+                                 label=f"{cls} [3D FOV-FILTERED]", linewidth=1.6)
+        elif tid in ids_range_filtered:
+            draw_2d_box_on_image(ax_cam, ann['box'], (0.65, 0.35, 0.2),
+                                 label=f"{cls} [3D RANGE-FILTERED]", linewidth=1.2)
+        elif tid in ids_visibility_filtered:
+            draw_2d_box_on_image(ax_cam, ann['box'], (1.0, 0.9, 0.0),
+                                 label=f"{cls} [UNEXPECTED no2D]", linewidth=1.8)
+        elif tid in ids_all_3d:
+            draw_2d_box_on_image(ax_cam, ann['box'], (0.85, 0.25, 0.25),
+                                 label=f"{cls} [3D FILTERED]", linewidth=1.0)
+
+    # Overlay camera-visible filtered 3D boxes (no matching 2D ID) in yellow.
+    img_h, img_w = img.shape[:2]
+    lidar2img_old = np.asarray(info.get('lidar2img', np.eye(4)), dtype=np.float64)
+    if lidar2img_old.ndim == 3:
+        lidar2img_old = lidar2img_old[0]
+    R_inv_4x4 = np.eye(4, dtype=np.float64)
+    R_inv_4x4[:3, :3] = np.array([
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+    lidar2img_rot = lidar2img_old @ R_inv_4x4
+
+    n_no2d_projected = 0
+    for i in np.where(mask_visibility_filtered)[0]:
+        box2d = project_box_to_2d(gt_boxes_rot[i], lidar2img_rot, img_w, img_h)
+        if box2d is None:
+            continue
+        x1, y1, x2, y2 = box2d
+        tid_suffix = str(track_ids[i])[-4:] if i < len(track_ids) and track_ids[i] else ''
+        label = f"{str(gt_names[i])} [no2D]"
+        if tid_suffix:
+            label += f" {tid_suffix}"
+        draw_2d_rect_on_image(
+            ax_cam, x1, y1, x2, y2, color=(1.0, 0.9, 0.0),
+            label=label, linewidth=1.8, linestyle='--', alpha=0.95)
+        n_no2d_projected += 1
+
+    no2d_preview = ', '.join(ids_no2d_filtered[:8]) if ids_no2d_filtered else '-'
+    ax_cam.text(
+        0.01, 0.99,
+        f"3D no-2D filtered (in range+FOV): {n_visibility_only}\n"
+        f"Projected in camera: {n_no2d_projected}\n"
+        f"IDs: {no2d_preview}\n"
+        f"vis-flag mismatch count: {n_visibility_mismatch}",
+        transform=ax_cam.transAxes, ha='left', va='top', fontsize=8,
+        color='white',
+        bbox=dict(boxstyle='round,pad=0.25', facecolor='black', alpha=0.45,
+                  edgecolor='#666666'))
 
     # --- Panel 2: BEV View (rotated frame: x=right, y=forward) ---
     ax_bev = fig.add_axes([0.52, 0.05, 0.45, 0.85])
     ax_bev.set_facecolor('#0d1117')
-    ax_bev.set_title("BEV (rotated frame: x=right, y=forward) + FOV cone",
-                      color='white')
+    ax_bev.set_title(
+        "BEV (rotated frame: x=right, y=forward) + range/FOV/visibility filters",
+        color='white')
 
     # Draw range boundary
     range_w = pc_range[3] - pc_range[0]
@@ -367,10 +523,20 @@ def visualize_single_frame(info, data_root, out_dir, frame_num,
     for i in range(n_total):
         box = gt_boxes_rot[i]
         name = str(gt_names[i])
+        tid = track_ids[i] if i < len(track_ids) else ''
 
         if mask_kept[i]:
             color = BEV_CLASS_COLORS.get(name, BEV_CLASS_COLORS['unknown'])
             draw_bev_box(ax_bev, box, color, linewidth=2.0)
+        elif mask_visibility_filtered[i]:
+            # In range + FOV, but no matching 2D bbox => camera-visible filtered
+            draw_bev_box(ax_bev, box, '#ffd700', linewidth=1.8)
+            ax_bev.plot(box[0], box[1], 'x', color='#ffd700',
+                        markersize=8, alpha=0.9)
+            if tid:
+                ax_bev.text(box[0], box[1] + 0.8, f"no2d:{tid[-4:]}",
+                            fontsize=5, color='#ffd700',
+                            ha='center', va='bottom', alpha=0.9)
         elif not mask_range[i]:
             # Outside range — dim red
             draw_bev_box(ax_bev, box, '#663333', linewidth=0.6)
@@ -390,10 +556,25 @@ def visualize_single_frame(info, data_root, out_dir, frame_num,
     ax_bev.set_aspect('equal')
     ax_bev.tick_params(colors='#666666')
 
+    ax_bev.text(
+        0.02, 0.02,
+        f"3D(valid): {n_total}\n"
+        f"in range: {int(mask_range.sum()) if n_total > 0 else 0}\n"
+        f"in range+FOV: {int(mask_after_fov.sum()) if n_total > 0 else 0}\n"
+        f"filtered by no2D: {n_visibility_only}\n"
+        f"final kept: {n_kept}\n"
+        f"vis-flag mismatch: {n_visibility_mismatch}",
+        transform=ax_bev.transAxes, ha='left', va='bottom',
+        fontsize=8, color='white',
+        bbox=dict(boxstyle='round,pad=0.25', facecolor='black', alpha=0.45,
+                  edgecolor='#666666'))
+
     # Legend
     legend_items = [
         mpatches.Patch(facecolor='none', edgecolor='#1E90FF',
-                       linewidth=2, label='KEPT (in range + FOV)'),
+                       linewidth=2, label='Final KEPT'),
+        mpatches.Patch(facecolor='none', edgecolor='#ffd700',
+                       linewidth=1.8, label='Camera-visible filtered (no 2D ID)'),
         mpatches.Patch(facecolor='none', edgecolor='#ff4444',
                        linewidth=1, label='FOV-filtered (in range, outside FOV)'),
         mpatches.Patch(facecolor='none', edgecolor='#663333',
@@ -408,7 +589,7 @@ def visualize_single_frame(info, data_root, out_dir, frame_num,
         out_dir, f"frame_{frame_num:04d}_{scenario}_f{frame_idx}.png")
     plt.savefig(out_path, dpi=150, facecolor=fig.get_facecolor())
     plt.close(fig)
-    return True, n_total, n_kept, n_fov_only
+    return True, n_total, n_kept, n_fov_only, n_visibility_only, n_visibility_mismatch
 
 
 # ------------------------------------------------------------------ #
@@ -416,7 +597,7 @@ def visualize_single_frame(info, data_root, out_dir, frame_num,
 # ------------------------------------------------------------------ #
 def main():
     parser = argparse.ArgumentParser(
-        description='Visualize LOKI ground truth with range + FOV filtering')
+        description='Visualize LOKI ground truth with range + FOV + camera-visible filtering')
     parser.add_argument('--pkl', type=str,
                         default='data/infos/loki_infos_val.pkl',
                         help='Path to loki_infos pkl file')
@@ -438,6 +619,7 @@ def main():
 
     print(f"FOV filter: {args.fov_deg}°  (half = ±{args.fov_deg/2:.1f}°)")
     print(f"Range filter: {POINT_CLOUD_RANGE}")
+    print("Camera-visible filter: keep 3D boxes with matching 2D track ID")
 
     # Load pkl
     print(f"Loading {args.pkl} ...")
@@ -450,34 +632,49 @@ def main():
     print(f"\n=== Visualizing {args.num_samples} frames ===")
     np.random.seed(args.seed)
     n_obj_counts = [len(info['gt_boxes']) for info in infos]
-    top_indices = np.argsort(n_obj_counts)[-args.num_samples // 2:]
-    rand_indices = np.random.choice(
-        len(infos), size=args.num_samples - len(top_indices), replace=False)
-    sample_indices = sorted(
-        set(top_indices.tolist() + rand_indices.tolist()))[:args.num_samples]
+    num_samples = min(args.num_samples, len(infos))
+    num_top = min(num_samples // 2, len(infos))
+    top_indices = np.argsort(n_obj_counts)[-num_top:] if num_top > 0 else np.array([], dtype=np.int64)
 
-    total_all, total_kept, total_fov_filtered = 0, 0, 0
+    num_rand = num_samples - len(top_indices)
+    rand_pool = np.setdiff1d(np.arange(len(infos)), top_indices, assume_unique=False)
+    if num_rand > 0 and len(rand_pool) > 0:
+        num_rand = min(num_rand, len(rand_pool))
+        rand_indices = np.random.choice(rand_pool, size=num_rand, replace=False)
+    else:
+        rand_indices = np.array([], dtype=np.int64)
+
+    sample_indices = sorted(set(top_indices.tolist() + rand_indices.tolist()))[:num_samples]
+
+    total_all, total_kept = 0, 0
+    total_fov_filtered, total_visibility_filtered = 0, 0
+    total_visibility_mismatch = 0
     for frame_num, idx in enumerate(sample_indices):
         info = infos[idx]
-        success, n_total, n_kept, n_fov = visualize_single_frame(
+        success, n_total, n_kept, n_fov, n_vis, n_mismatch = visualize_single_frame(
             info, args.data_root, args.out_dir, frame_num,
             fov_deg=args.fov_deg)
         total_all += n_total
         total_kept += n_kept
         total_fov_filtered += n_fov
+        total_visibility_filtered += n_vis
+        total_visibility_mismatch += n_mismatch
         status = "OK" if success else "SKIP"
         print(f"  [{status}] {frame_num+1}/{len(sample_indices)}: "
               f"{info.get('scenario','?')} frame {info.get('frame_idx','?')} "
-              f"— {n_kept}/{n_total} kept, {n_fov} FOV-filtered")
+              f"— {n_kept}/{n_total} kept, {n_vis} no2D-filtered, "
+              f"{n_fov} FOV-filtered, {n_mismatch} vis-mismatch")
 
     print(f"\n=== Summary ===")
     print(f"  Total objects:      {total_all}")
-    print(f"  Kept (in FOV):      {total_kept}")
+    print(f"  Final kept:         {total_kept}")
+    print(f"  no2D-filtered:      {total_visibility_filtered}")
     print(f"  FOV-filtered:       {total_fov_filtered}")
-    print(f"  Range-filtered:     {total_all - total_kept - total_fov_filtered}")
+    print(f"  Range-filtered:     {total_all - total_kept - total_fov_filtered - total_visibility_filtered}")
+    print(f"  vis-flag mismatch:  {total_visibility_mismatch}")
     if total_all > 0:
-        print(f"  FOV filter removed: {total_fov_filtered/total_all*100:.1f}% "
-              f"of all objects")
+        print(f"  no2D removed:       {total_visibility_filtered/total_all*100:.1f}% of all objects")
+        print(f"  FOV removed:        {total_fov_filtered/total_all*100:.1f}% of all objects")
     print(f"\nDone! Results saved to {args.out_dir}/")
 
 
