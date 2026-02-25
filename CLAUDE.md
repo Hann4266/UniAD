@@ -44,6 +44,15 @@ The FOV filter only checks angular position — agents within the 60° cone but 
 - `projects/configs/loki/base_loki_perception.py` — added after `ObjectFOVFilterTrack`
 - `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `gt_camera_visible` in `get_ann_info()` and `get_data_info()`
 
+### Compatibility notes (training stability)
+- `gt_labels_intent` KeyError fix:
+  - Cause: `ObjectRangeFilterTrack` expects `gt_labels_intent`, but LOKI has no intent labels.
+  - Fix: `LokiE2EDataset.get_ann_info()` now always emits dummy intent labels (`zeros`), and annotation loaders pass through `gt_labels_intent` when present.
+  - Files: `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py`, `projects/mmdet3d_plugin/datasets/pipelines/loading.py`, `projects/mmdet3d_plugin/datasets/pipelines/loki_loading.py`.
+- Resume vs load behavior:
+  - Use `resume_from` only when optimizer parameter groups match checkpoint.
+  - If model params changed (e.g., adding/removing trainable modules), resume can fail with `different number of parameter groups`; use `load_from` instead.
+
 ### Regenerating pkl (required before training)
 ```bash
 cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_infos.py \
@@ -71,8 +80,8 @@ cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_
 ### Tools
 - `tools/train.py` / `tools/test.py` — Standard mmdet3d train/test. Test requires distributed launch (`torchrun`).
 - `tools/create_loki_infos.py` — Generates pkl info files from raw LOKI data.
-- `tools/visualize_predictions.py` — **Primary visualization tool.** Combined camera+BEV per frame. Camera: solid green=GT from `label2d_*.json` (pixel-accurate), dashed colored=pred projected from 3D. BEV: white=GT 3D boxes from pkl, dashed colored=pred 3D boxes with heading arrows. Uses original LOKI frame (x=forward, y=lateral). Requires `--data-root` for label2d JSONs.
-- `tools/visualize_loki_gt.py` — Visualize GT with range + FOV filtering. Shows camera view (2D labels with KEPT/FILTERED status) and BEV in rotated frame with 60° FOV cone overlay. Applies 90° CCW rotation to boxes before filtering.
+- `tools/visualize_predictions.py` — **Primary visualization tool.** Combined camera+BEV per frame. Camera: solid green=GT from `label2d_*.json` (pixel-accurate, inherently FOV+visibility filtered), dashed colored=pred projected from 3D. BEV: white=GT 3D boxes filtered by PC range + 60° FOV cone + `gt_camera_visible` (matches eval filtering), dashed colored=pred 3D boxes with heading arrows. Uses original LOKI frame (x=forward, y=lateral). Requires `--data-root` for label2d JSONs.
+- `tools/visualize_loki_gt.py` — Visualize GT with range + FOV + camera-visibility filtering. Camera view can show projected yellow boxes for 3D agents removed by no-2D visibility filter; BEV shows final-kept / FOV-filtered / range-filtered / no2D-filtered in rotated frame.
 
 ### Data
 - `data/infos/loki_infos_train.pkl`, `data/infos/loki_infos_val.pkl` — Pre-computed info dicts
@@ -187,3 +196,134 @@ LOKI has no LiDAR — 3D z values come from GPS/IMU and are noisy for vehicles (
 - Results in the **OLD system** (before 90° rotation was added to the dataset loader): x=forward, y=lateral.
 - Val pkl `gt_boxes` are also in the original LOKI frame (rotation is applied by the loader at runtime, not in the pkl).
 - The `lidar2img` in the pkl is for the original 1920×1208 image with assumed FOV=60°, no sensor height offset.
+
+## Zero-Shot nuScenes→LOKI Inference
+
+### Overview
+A nuScenes-trained UniAD checkpoint (`work_dirs/zihan_nuscenes_weight/epoch_6.pth`) is run zero-shot on LOKI data. The nuScenes model has 10 classes, 6-camera input, and a `seg_head` (PansegformerHead) for map segmentation. LOKI's single camera is padded to 6 via `PadToMultiCamera` in the test pipeline.
+
+### Config
+- `projects/configs/loki/loki_nuscenes_zeroshot.py` — Uses nuScenes architecture (10 classes, seg_head for map) with LOKI data. `PadToMultiCamera` pads single camera to 6. Point cloud range: `[-51.2, 0, -5, 51.2, 51.2, 3]` (rotated frame).
+
+### Class mapping (nuScenes → LOKI)
+The nuScenes model outputs labels 0-9 in nuScenes class order, which differs from LOKI's 8-class order:
+
+| Label | nuScenes class         | LOKI class     |
+|-------|------------------------|----------------|
+| 0     | car                    | Car            |
+| 1     | truck                  | Truck          |
+| 2     | construction_vehicle   | (no equivalent)|
+| 3     | bus                    | Bus            |
+| 4     | trailer                | (no equivalent)|
+| 5     | barrier                | (no equivalent)|
+| 6     | motorcycle             | Motorcyclist   |
+| 7     | bicycle                | Bicyclist      |
+| 8     | pedestrian             | Pedestrian     |
+| 9     | traffic_cone           | (no equivalent)|
+
+### Coordinate system for zeroshot results
+Predictions are in the **rotated frame** (x=right, y=forward) — same as the model's operating frame. To visualize alongside GT in the original LOKI frame (x=forward, y=lateral), apply `R_inv`:
+- `x_old = y_new`, `y_old = -x_new`, `yaw_old = yaw_new - π/2`
+- `vx_old = vy_new`, `vy_old = -vx_new`
+
+### Results files
+- `work_dirs/nuscenes_on_loki/results_zeroshot.pkl` — Full val set (4236 frames, 64 scenes), detection only (no `pts_bbox`)
+- `work_dirs/nuscenes_on_loki/results_zeroshot_with_map_20.pkl` — 20 frames from scenario_004 only, includes `pts_bbox` (map predictions)
+- `work_dirs/nuscenes_on_loki/results_zeroshot_with_map_64scenes.pkl` — 64 frames (1 per scene), includes `pts_bbox`
+
+### Map predictions (pts_bbox)
+When `seg_head` is present in the config, results include `pts_bbox` dict per frame:
+- `drivable`: `(100, 200)` bool — drivable area BEV mask
+- `lane`: `(3, 100, 200)` int64 — lane line masks (divider, crossing, contour)
+- `lane_score`: `(3, 100, 200)` float32 — lane confidence scores
+- `segm`: `(100, 100, 200)` bool — instance segmentation masks
+- `bbox`: `(100, 5)` float32 — bounding boxes
+- `panoptic`: tuple — panoptic segmentation
+
+Map stats across 64 scenes: drivable area ~44.5% coverage, lane lines ~3% coverage. All 64 scenes produce non-zero predictions.
+
+### Running zeroshot inference
+```bash
+# Full val set (4236 frames, ~70 min on 1 GPU, no map output in existing run)
+cd /mnt/storage/UniAD && \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$(pwd):$PYTHONPATH \
+python -m torch.distributed.launch --nproc_per_node=1 --master_port=29601 \
+tools/test.py \
+projects/configs/loki/loki_nuscenes_zeroshot.py \
+work_dirs/zihan_nuscenes_weight/epoch_6.pth \
+--launcher pytorch \
+--out work_dirs/nuscenes_on_loki/results_zeroshot.pkl \
+--tmpdir /tmp/uniad_zeroshot_collect \
+--cfg-options data.workers_per_gpu=1
+
+# Subset (1 frame per scene, 64 frames, ~1 min) — uses trimmed val pkl
+cd /mnt/storage/UniAD && \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$(pwd):$PYTHONPATH \
+python -m torch.distributed.launch --nproc_per_node=1 --master_port=29602 \
+tools/test.py \
+projects/configs/loki/loki_nuscenes_zeroshot.py \
+work_dirs/zihan_nuscenes_weight/epoch_6.pth \
+--launcher pytorch \
+--out work_dirs/nuscenes_on_loki/results_zeroshot_with_map_64scenes.pkl \
+--tmpdir /tmp/uniad_zeroshot_64s \
+--cfg-options data.test.ann_file=data/infos/loki_infos_val_1perscene.pkl data.workers_per_gpu=1
+```
+
+### Visualization tools
+
+#### Detection visualization (`tools/visualize_predictions.py`)
+Camera+BEV combined figure. For nuScenes zeroshot results, use `--rotated-preds` flag which:
+1. Applies `rotate_boxes_to_original()` to convert predicted boxes from rotated→original LOKI frame
+2. Switches class names from LOKI 8-class to nuScenes 10-class list (`CLASS_NAMES_NUSCENES`)
+
+**BEV GT filtering** (matches eval pipeline):
+- PC range: `x ∈ [0, 51.2]m, y ∈ [−51.2, 51.2]m`
+- 60° FOV cone: `x > 0 and |atan2(y, x)| ≤ 30°` (original LOKI frame, via `_in_fov_original()`)
+- Camera visibility: `gt_camera_visible[i]` from pkl (skipped gracefully if field absent)
+
+**Token mismatch note (epoch-6 results):** `results_epoch6.pkl` was produced before the current val split — only 261/2482 tokens overlap with `loki_infos_val.pkl`. Use `--tokens` with the overlapping subset:
+```bash
+python3 -c "
+import pickle
+r = pickle.load(open('work_dirs/base_loki_perception/results_epoch6.pkl','rb'))
+v = pickle.load(open('data/infos/loki_infos_val.pkl','rb'))
+vt = {i['token'] for i in v['infos']}
+overlap = [p['token'] for p in r['bbox_results'] if p['token'] in vt]
+print(' '.join(overlap[:20]))
+"
+```
+
+```bash
+# LOKI-trained model
+python tools/visualize_predictions.py \
+    --results work_dirs/base_loki_perception/results_epoch6.pkl \
+    --val-pkl data/infos/loki_infos_val.pkl \
+    --data-root /mnt/storage/loki_data \
+    --out-dir vis_predictions/ \
+    --score-thresh 0.4 \
+    --tokens <overlapping tokens from snippet above>
+
+# Zero-shot nuScenes model
+python tools/visualize_predictions.py \
+    --results work_dirs/nuscenes_on_loki/results_zeroshot.pkl \
+    --val-pkl data/infos/loki_infos_val.pkl \
+    --data-root /mnt/storage/loki_data \
+    --out-dir work_dirs/nuscenes_on_loki/vis_det_zeroshot_multiscene \
+    --score-thresh 0.3 --rotated-preds \
+    --num-frames 20
+```
+
+#### Map visualization (`tools/visualize_map_predictions.py`)
+Camera image on top, 4 separate BEV panels below (drivable, divider, crossing, contour) — avoids overlap. Each panel has a yellow dashed ego midline at x=0 (BEV column 100). Also saves scaled BEV-only images to `bev_only/` subdirectory.
+
+```bash
+python tools/visualize_map_predictions.py \
+    --results work_dirs/nuscenes_on_loki/results_zeroshot_with_map_64scenes.pkl \
+    --loki-infos data/infos/loki_infos_val_1perscene.pkl \
+    --data-root /mnt/storage/loki_data/ \
+    --out-dir work_dirs/nuscenes_on_loki/vis_map_zeroshot_64scenes \
+    --num-samples 64
+```
+
+### Subset val pkl
+`data/infos/loki_infos_val_1perscene.pkl` — 64 frames (frame 5 from each of the 64 val scenes). Created by grouping val infos by `scene_token` and picking 1 frame per scene. Used for fast inference with map output.

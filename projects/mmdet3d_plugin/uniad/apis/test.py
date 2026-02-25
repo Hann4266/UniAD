@@ -114,6 +114,14 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                         panoptic_metrics[key](result[0]['occ']['ins_seg_out'][..., limits, limits].contiguous().detach(),
                                                 result[0]['occ']['ins_seg_gt'][..., limits, limits].contiguous())
 
+            # Always move map prediction tensors to CPU when present so they can
+            # be serialized safely in result pkl files.
+            if isinstance(result, list) and len(result) > 0 \
+               and isinstance(result[0], dict) and 'pts_bbox' in result[0]:
+                for k, v in result[0]['pts_bbox'].items():
+                    if isinstance(v, torch.Tensor):
+                        result[0]['pts_bbox'][k] = v.detach().cpu()
+
             # Pop out unnecessary occ results, avoid appending it to cpu when collect_results_cpu
             if os.environ.get('ENABLE_PLOT_MODE', None) is None:
                 result[0].pop('occ', None)
@@ -122,9 +130,6 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
                 for k in ['seg_gt', 'ins_seg_gt', 'pred_ins_sigmoid', 'seg_out', 'ins_seg_out']:
                     if k in result[0]['occ']:
                         result[0]['occ'][k] = result[0]['occ'][k].detach().cpu()
-                for k in ['bbox', 'segm', 'labels', 'panoptic', 'drivable', 'score_list', 'lane', 'lane_score', 'stuff_score_list']:
-                    if k in result[0]['pts_bbox'] and isinstance(result[0]['pts_bbox'][k], torch.Tensor):
-                        result[0]['pts_bbox'][k] = result[0]['pts_bbox'][k].detach().cpu()
 
             # encode mask results
             if isinstance(result, dict):

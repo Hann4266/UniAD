@@ -40,7 +40,7 @@ from PIL import Image
 # ------------------------------------------------------------------ #
 #  Constants
 # ------------------------------------------------------------------ #
-CLASS_NAMES = [
+CLASS_NAMES_LOKI = [
     "Pedestrian",   # 0
     "Car",          # 1
     "Bus",          # 2
@@ -50,6 +50,21 @@ CLASS_NAMES = [
     "Bicyclist",    # 6
     "Other",        # 7
 ]
+
+CLASS_NAMES_NUSCENES = [
+    "Car",                  # 0
+    "Truck",                # 1
+    "ConstructionVehicle",  # 2
+    "Bus",                  # 3
+    "Trailer",              # 4
+    "Barrier",              # 5
+    "Motorcyclist",         # 6
+    "Bicyclist",            # 7
+    "Pedestrian",           # 8
+    "TrafficCone",          # 9
+]
+
+CLASS_NAMES = CLASS_NAMES_LOKI  # default, overridden by --rotated-preds
 
 # LOKI raw class  →  display name (for 2D GT label colouring)
 LOKI_TO_DISPLAY = {
@@ -69,20 +84,57 @@ PKL_TO_DISPLAY = {
 
 # Per-class colors (used for predictions; GT is white/green)
 CLASS_COLORS = {
-    "Pedestrian":   "#FF4500",
-    "Car":          "#1E90FF",
-    "Bus":          "#9400D3",
-    "Truck":        "#FF8C00",
-    "Van":          "#00BFFF",
-    "Motorcyclist": "#00CC66",
-    "Bicyclist":    "#00BFBF",
-    "Other":        "#AAAAAA",
+    "Pedestrian":           "#FF4500",
+    "Car":                  "#1E90FF",
+    "Bus":                  "#9400D3",
+    "Truck":                "#FF8C00",
+    "Van":                  "#00BFFF",
+    "Motorcyclist":         "#00CC66",
+    "Bicyclist":            "#00BFBF",
+    "Other":                "#AAAAAA",
+    "ConstructionVehicle":  "#FFD700",
+    "Trailer":              "#8B4513",
+    "Barrier":              "#808080",
+    "TrafficCone":          "#FF69B4",
 }
 
 GT_CAM_COLOR = "#00FF00"   # solid green for camera GT
 GT_BEV_COLOR = "#FFFFFF"   # solid white for BEV GT
 
 PC_RANGE = [0.0, -51.2, -5.0, 51.2, 51.2, 3.0]  # [xmin,ymin,zmin,xmax,ymax,zmax]
+
+# Half-angle of the 60° front-camera FOV (original LOKI frame: x=forward, y=lateral)
+_FOV_HALF_RAD = np.deg2rad(30.0)
+
+
+def _in_fov_original(b):
+    """True if box centre is within the 60° front-camera FOV.
+
+    Original LOKI frame: +x = forward, +y = lateral.
+    Mirrors the rotated-frame logic in loki_e2e_dataset._in_fov().
+    """
+    x, y = float(b[0]), float(b[1])
+    return x > 0 and abs(np.arctan2(y, x)) <= _FOV_HALF_RAD
+
+
+def rotate_boxes_to_original(boxes):
+    """Convert predicted boxes from rotated frame (x=right, y=forward)
+    back to original LOKI frame (x=forward, y=lateral).
+
+    R_inv (new→old): x_old = y_new, y_old = -x_new, yaw_old = yaw_new - π/2
+
+    Args:
+        boxes: (N, 9) array [x, y, z, dx, dy, dz, yaw, vx, vy]
+    Returns:
+        (N, 9) array in original LOKI frame
+    """
+    out = boxes.copy()
+    out[:, 0] = boxes[:, 1]    # x_old = y_new (forward)
+    out[:, 1] = -boxes[:, 0]   # y_old = -x_new (lateral)
+    out[:, 6] = boxes[:, 6] - np.pi / 2  # yaw
+    out[:, 7] = boxes[:, 8]    # vx_old = vy_new
+    out[:, 8] = -boxes[:, 7]   # vy_old = -vx_new
+    return out
 
 
 # ------------------------------------------------------------------ #
@@ -215,7 +267,8 @@ def draw_bev_box(ax, box, color, linestyle="-", linewidth=1.5,
 #  Per-frame combined visualization
 # ------------------------------------------------------------------ #
 def visualize_frame(info, pred, data_root, out_dir,
-                    frame_idx_global, score_thresh=0.4):
+                    frame_idx_global, score_thresh=0.4,
+                    rotated_preds=False):
     img_path = info["img_filename"]
     if not os.path.exists(img_path):
         return False
@@ -231,14 +284,24 @@ def visualize_frame(info, pred, data_root, out_dir,
     # GT 2D labels (camera)
     gt_anns_2d = load_label2d(data_root, scenario, frame_idx)
 
-    # GT 3D boxes (BEV) — filter by PC range
-    gt_boxes = info["gt_boxes"]   # (N, 9)
-    gt_names = info["gt_names"]   # (N,)
+    # GT 3D boxes (BEV) — filter by PC range + 60° FOV + camera visibility
+    gt_boxes  = info["gt_boxes"]              # (N, 9)
+    gt_names  = info["gt_names"]              # (N,)
+    gt_vis    = info.get("gt_camera_visible") # bool array (N,) or None
+
     def in_range(b):
         return (PC_RANGE[0] <= b[0] <= PC_RANGE[3] and
                 PC_RANGE[1] <= b[1] <= PC_RANGE[4])
-    gt_bev = [(b, PKL_TO_DISPLAY.get(str(n), str(n)))
-              for b, n in zip(gt_boxes, gt_names) if in_range(b)]
+
+    gt_bev = []
+    for i, (b, n) in enumerate(zip(gt_boxes, gt_names)):
+        if not in_range(b):
+            continue
+        if not _in_fov_original(b):
+            continue
+        if gt_vis is not None and not gt_vis[i]:
+            continue
+        gt_bev.append((b, PKL_TO_DISPLAY.get(str(n), str(n))))
 
     # Predictions
     pred_boxes  = pred["boxes_3d"].tensor.numpy()
@@ -248,6 +311,9 @@ def visualize_frame(info, pred, data_root, out_dir,
     pred_boxes  = pred_boxes[mask]
     pred_scores = pred_scores[mask]
     pred_labels = pred_labels[mask]
+
+    if rotated_preds and len(pred_boxes) > 0:
+        pred_boxes = rotate_boxes_to_original(pred_boxes)
 
     # ---------------------------------------------------------------- #
     #  Figure layout:  camera (left 58%)  |  BEV (right 42%)
@@ -394,7 +460,16 @@ def main():
     parser.add_argument("--num-frames", type=int, default=20)
     parser.add_argument("--tokens",     nargs="*", default=None)
     parser.add_argument("--all-frames", action="store_true")
+    parser.add_argument("--rotated-preds", action="store_true",
+                        help="Predictions are in rotated frame (x=right, y=forward). "
+                             "Apply inverse rotation to original LOKI frame before viz.")
     args = parser.parse_args()
+
+    # Switch class names when using nuScenes model predictions
+    global CLASS_NAMES
+    if args.rotated_preds:
+        CLASS_NAMES = CLASS_NAMES_NUSCENES
+        print("Using nuScenes class names (10 classes)")
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -427,6 +502,7 @@ def main():
         ok = visualize_frame(
             info, pred, args.data_root, args.out_dir,
             frame_idx_global=i, score_thresh=args.score_thresh,
+            rotated_preds=args.rotated_preds,
         )
         n_pred = int((pred["scores_3d"] >= args.score_thresh).sum())
         print(f"  [{'OK' if ok else 'SKIP'}] {i+1:3d}/{len(tokens)}  {tok}  Pred={n_pred}")

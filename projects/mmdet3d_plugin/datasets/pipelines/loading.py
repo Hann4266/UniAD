@@ -190,15 +190,16 @@ class LoadAnnotations3D_E2E(LoadAnnotations3D):
 
     def _load_intent_label_3d(self, results):
         """Load intent labels from ann_info to top-level results."""
-        
-        gt_labels_intent = results['ann_info']['gt_labels_intent']
-        results['gt_labels_intent'] = gt_labels_intent
+        if 'gt_labels_intent' in results.get('ann_info', {}):
+            results['gt_labels_intent'] = results['ann_info']['gt_labels_intent']
 
         return results
 
     def __call__(self, results):
         results = super().__call__(results)
-        if self.with_intent_label_3d:
+        # Auto-pass through intent labels whenever present in ann_info, even
+        # if with_intent_label_3d=False in config (keeps legacy configs working).
+        if self.with_intent_label_3d or 'gt_labels_intent' in results.get('ann_info', {}):
             results = self._load_intent_label_3d(results)
         if self.with_future_anns:
             results = self._load_future_anns(results)

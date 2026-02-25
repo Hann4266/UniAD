@@ -31,7 +31,7 @@ COLORS = {
 
 
 def make_bev_map_image(pts_bbox, bev_h=BEV_H, bev_w=BEV_W):
-    """Render map predictions onto a BEV image.
+    """Render map predictions onto a BEV image (all layers overlapped).
 
     Args:
         pts_bbox: dict with 'drivable' (H,W bool), 'lane' (3,H,W int)
@@ -62,49 +62,109 @@ def make_bev_map_image(pts_bbox, bev_h=BEV_H, bev_w=BEV_W):
     return canvas
 
 
-def make_combined_figure(camera_img, bev_map, token):
-    """Create a side-by-side figure: camera image + BEV map prediction.
+def make_bev_separate(pts_bbox, bev_h=BEV_H, bev_w=BEV_W):
+    """Render each map layer as a separate BEV image.
+
+    Returns:
+        dict mapping layer name -> (H, W, 3) uint8 image
+    """
+    layers = {}
+
+    drivable = pts_bbox['drivable']
+    if hasattr(drivable, 'cpu'):
+        drivable = drivable.cpu().numpy()
+    drivable = drivable.astype(bool)
+    canvas = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
+    canvas[drivable] = COLORS['drivable']
+    layers['drivable'] = canvas
+
+    lane = pts_bbox['lane']
+    if hasattr(lane, 'cpu'):
+        lane = lane.cpu().numpy()
+
+    lane_names = ['divider', 'crossing', 'contour']
+    for i, name in enumerate(lane_names):
+        canvas = np.zeros((bev_h, bev_w, 3), dtype=np.uint8)
+        mask = lane[i].astype(bool)
+        canvas[mask] = COLORS[name]
+        layers[name] = canvas
+
+    return layers
+
+
+def make_combined_figure(camera_img, pts_bbox, token):
+    """Create a figure: camera image on top, 4 separate BEV maps in a row below.
+
+    Layout:
+        [         camera image         ]
+        [drivable][divider][crossing][contour]
 
     Args:
         camera_img: (H, W, 3) BGR camera image
-        bev_map: (bev_h, bev_w, 3) RGB BEV map
+        pts_bbox: dict with 'drivable' and 'lane'
         token: sample token string
 
     Returns:
-        Combined image (H, W_total, 3) uint8
+        Combined image uint8
     """
-    # Scale BEV map to match camera image height
     cam_h, cam_w = camera_img.shape[:2]
-    bev_h, bev_w = bev_map.shape[:2]
 
-    # Scale BEV to same height as camera
-    scale = cam_h / bev_h
-    bev_scaled = cv2.resize(bev_map, (int(bev_w * scale), cam_h),
+    layers = make_bev_separate(pts_bbox)
+    layer_names = ['drivable', 'divider', 'crossing', 'contour']
+
+    # Scale each BEV panel so 4 panels side-by-side match camera width
+    panel_w = cam_w // 4
+    panel_h = int(panel_w * BEV_H / BEV_W)
+
+    panels = []
+    for name in layer_names:
+        bev = layers[name]
+        scaled = cv2.resize(bev, (panel_w, panel_h),
                             interpolation=cv2.INTER_NEAREST)
+        # Ego marker at x-axis midpoint (x=0 in BEV -> column BEV_W/2)
+        ego_x = panel_w // 2
+        # Dashed vertical line
+        dash_len = 6
+        for y in range(0, panel_h, dash_len * 2):
+            y_end = min(y + dash_len, panel_h)
+            cv2.line(scaled, (ego_x, y), (ego_x, y_end), (0, 255, 255), 1)
+        # Small triangle at bottom to mark ego position
+        tri_sz = 5
+        pts = np.array([
+            [ego_x, panel_h - 1],
+            [ego_x - tri_sz, panel_h - 1 - tri_sz * 2],
+            [ego_x + tri_sz, panel_h - 1 - tri_sz * 2],
+        ])
+        cv2.fillPoly(scaled, [pts], (0, 255, 255))
+        # Add label
+        cv2.putText(scaled, name, (4, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        # Color swatch next to label
+        cv2.rectangle(scaled, (panel_w - 20, 6), (panel_w - 6, 18),
+                      COLORS[name], -1)
+        panels.append(scaled)
 
-    # Add border and label to BEV
-    bev_bordered = cv2.copyMakeBorder(bev_scaled, 0, 0, 2, 2,
-                                       cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    # Add 1px white border between panels
+    separator = np.full((panel_h, 1, 3), 255, dtype=np.uint8)
+    bev_row = panels[0]
+    for p in panels[1:]:
+        bev_row = np.concatenate([bev_row, separator, p], axis=1)
 
-    # Combine side by side
-    combined = np.concatenate([camera_img, bev_bordered], axis=1)
+    # Pad or crop bev_row to match camera width
+    if bev_row.shape[1] < cam_w:
+        pad = np.zeros((panel_h, cam_w - bev_row.shape[1], 3), dtype=np.uint8)
+        bev_row = np.concatenate([bev_row, pad], axis=1)
+    else:
+        bev_row = bev_row[:, :cam_w]
 
-    # Add title
-    cv2.putText(combined, f'Token: {token}', (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(combined, 'Camera', (10, cam_h - 10),
+    # Thin white separator between camera and BEV row
+    hsep = np.full((2, cam_w, 3), 255, dtype=np.uint8)
+
+    combined = np.concatenate([camera_img, hsep, bev_row], axis=0)
+
+    # Title on camera image
+    cv2.putText(combined, f'Token: {token}', (10, 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(combined, 'BEV Map Pred', (cam_w + 10, cam_h - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-    # Legend
-    y_legend = 60
-    for name, color in COLORS.items():
-        cv2.rectangle(combined, (cam_w + 10, y_legend - 12),
-                      (cam_w + 25, y_legend), color, -1)
-        cv2.putText(combined, name, (cam_w + 30, y_legend),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        y_legend += 20
 
     return combined
 
@@ -214,9 +274,6 @@ def main():
         r = results[idx]
         token = r['token']
 
-        # Get BEV map
-        bev_map = make_bev_map_image(r['pts_bbox'])
-
         # Load camera image
         info = token_to_info.get(token)
         if info is None:
@@ -243,8 +300,8 @@ def main():
             print(f"  Warning: image not found: {img_path}")
             camera_img = np.zeros((450, 800, 3), dtype=np.uint8)
 
-        # Create combined figure
-        combined = make_combined_figure(camera_img, bev_map, token)
+        # Create combined figure with 4 separate BEV panels
+        combined = make_combined_figure(camera_img, r['pts_bbox'], token)
 
         # Save
         out_path = os.path.join(args.out_dir, f'{idx:04d}_{token}.jpg')

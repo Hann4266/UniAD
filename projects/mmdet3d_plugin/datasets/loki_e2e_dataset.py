@@ -757,8 +757,13 @@ class LokiE2EDataset(Custom3DDataset):
 
             sample_boxes = []
             for i in range(len(boxes_raw)):
-                det_name = PKL_TO_CONFIG.get(names_raw[i], None)
-                if det_name is None or det_name not in self.CLASSES:
+                # Try PKL_TO_CONFIG first (→ LOKI capitalized names e.g. 'Car').
+                # Fall back to the raw pkl name so nuScenes-class configs
+                # (where CLASSES=['car','motorcycle',...]) also match.
+                det_name = PKL_TO_CONFIG.get(names_raw[i], names_raw[i])
+                if det_name not in self.CLASSES:
+                    det_name = names_raw[i]
+                if det_name not in self.CLASSES:
                     continue
 
                 center = boxes_raw[i, :3]
@@ -1053,8 +1058,13 @@ class LokiE2EDataset(Custom3DDataset):
 
             frame_boxes = []
             for i in range(len(boxes_raw)):
-                det_name = PKL_TO_CONFIG.get(names_raw[i], None)
-                if det_name is None or det_name not in self.CLASSES:
+                # Try PKL_TO_CONFIG first (→ LOKI capitalized names e.g. 'Car').
+                # Fall back to the raw pkl name so nuScenes-class configs
+                # (where CLASSES=['car','motorcycle',...]) also match.
+                det_name = PKL_TO_CONFIG.get(names_raw[i], names_raw[i])
+                if det_name not in self.CLASSES:
+                    det_name = names_raw[i]
+                if det_name not in self.CLASSES:
                     continue
                 center = boxes_raw[i, :3]
                 if np.linalg.norm(center[:2]) > track_cfg.class_range.get(
