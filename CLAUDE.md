@@ -327,3 +327,74 @@ python tools/visualize_map_predictions.py \
 
 ### Subset val pkl
 `data/infos/loki_infos_val_1perscene.pkl` — 64 frames (frame 5 from each of the 64 val scenes). Created by grouping val infos by `scene_token` and picking 1 frame per scene. Used for fast inference with map output.
+
+## Fine-tuning nuScenes→LOKI
+
+### Overview
+Fine-tune the nuScenes-pretrained UniAD checkpoint on LOKI data. The nuScenes model (10 classes, seg_head for map) is adapted to LOKI's 8-class, single-camera, no-map setting. Only BEVFormer encoder + detection/tracking decoder are trained (same modules as from-scratch LOKI training). Map head is removed entirely.
+
+### Class mapping (nuScenes→LOKI weight adaptation)
+
+| LOKI idx | LOKI class   | nuScenes idx | nuScenes source |
+|----------|-------------|-------------|-----------------|
+| 0        | Pedestrian  | 8           | pedestrian      |
+| 1        | Car         | 0           | car             |
+| 2        | Bus         | 3           | bus             |
+| 3        | Truck       | 1           | truck           |
+| 4        | Van         | 0           | car (Van mapped to Car in pkl) |
+| 5        | Motorcyclist| 6           | motorcycle      |
+| 6        | Bicyclist   | 7           | bicycle         |
+| 7        | Other       | —           | random init     |
+
+Dropped nuScenes classes: construction_vehicle (2), trailer (4), barrier (5), traffic_cone (9).
+
+### Weight adaptation
+`tools/adapt_nuscenes_to_loki.py` converts the nuScenes checkpoint:
+- Remaps `pts_bbox_head.cls_branches.{0-5}.6.{weight,bias}` from [10,...] → [8,...] using class mapping
+- Drops all 578 `seg_head.*` keys (map module, no LOKI map GT)
+- Drops optimizer state (param groups changed)
+- All other weights (backbone, neck, BEV encoder, decoder, regression heads, query embeddings, memory bank) transfer unchanged
+
+### Config
+`projects/configs/loki/loki_finetune_from_nuscenes.py` — Identical architecture to `base_loki_perception.py` (8 classes, no seg_head, single camera) but:
+- `load_from` points to the adapted checkpoint
+- Lower learning rate (5e-5 vs 2e-4) for fine-tuning stability
+- Same GT filters: range, 60° FOV, camera visibility (2D bbox check)
+
+### Trainable modules (same as from-scratch)
+- `img_neck` (FPN) — trainable
+- `pts_bbox_head.transformer.encoder` (BEVFormer encoder) — trainable
+- `pts_bbox_head.transformer.decoder` (detection decoder) — trainable
+- `pts_bbox_head.cls_branches` / `reg_branches` — trainable
+- `query_embedding`, `reference_points`, `query_interact`, `memory_bank` — trainable
+- `img_backbone` (ResNet101) — **frozen** (frozen_stages=4)
+- No seg_head / motion_head / occ_head / planning_head
+
+### Commands
+```bash
+# Step 1: Adapt checkpoint (10 classes → 8 classes, drop seg_head)
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH \
+python tools/adapt_nuscenes_to_loki.py \
+    --src /mnt/storage/UniAD/work_dirs/zihan_nuscenes_weight/epoch_6.pth \
+    --dst work_dirs/nuscenes_adapted_for_loki.pth
+
+# Step 2: Fine-tune (single GPU)
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -u tools/train.py \
+    projects/configs/loki/loki_finetune_from_nuscenes.py \
+    --deterministic \
+    --cfg-options log_config.interval=1
+
+# Step 2 alt: Fine-tune (8 GPU)
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=29500 \
+    tools/train.py projects/configs/loki/loki_finetune_from_nuscenes.py \
+    --launcher pytorch --deterministic --cfg-options log_config.interval=1
+
+# Step 3: Evaluate
+cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=28596 \
+    tools/test.py projects/configs/loki/loki_finetune_from_nuscenes.py \
+    work_dirs/loki_finetune_from_nuscenes/epoch_6.pth \
+    --launcher pytorch --eval bbox \
+    --out work_dirs/loki_finetune_from_nuscenes/results.pkl
+```
