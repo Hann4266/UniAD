@@ -564,8 +564,6 @@ data = dict(
         modality=input_modality,
         samples_per_gpu=1,
         eval_mod=['det', 'map', 'track','intent'],
-        
-
         occ_receptive_field=3,
         occ_n_future=occ_n_future_max,
         occ_filter_invalid_sample=False,

@@ -312,7 +312,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         # init before super init since it is called in parent class
         self.file_client_args = file_client_args
         self.file_client = mmcv.FileClient(**file_client_args)
-        intent_file = "/zihan-west-vol/UniAD/data/nuscenes/unified_label_outputs_v2/all_scenes_compact.json"
+        intent_file = "/zihan-west-vol/UniAD/data/nuscenes/unified_map_v2/all_scenes_compact.json"
         with open(intent_file, 'r') as f:
             self.intent_data = json.load(f)
         self.is_debug = is_debug
@@ -1284,47 +1284,47 @@ class NuScenesE2EDataset(NuScenesDataset):
             dict[str, float]: Results of each evaluation metric.
         """
         if isinstance(results, dict):
-            if 'occ_results_computed' in results.keys():
-                occ_results_computed = results['occ_results_computed']
-                out_metrics = ['iou']
+            # if 'occ_results_computed' in results.keys():
+            #     occ_results_computed = results['occ_results_computed']
+            #     out_metrics = ['iou']
 
-                # pan_eval
-                if occ_results_computed.get('pq', None) is not None:
-                    out_metrics = ['iou', 'pq', 'sq', 'rq']
+            #     # pan_eval
+            #     if occ_results_computed.get('pq', None) is not None:
+            #         out_metrics = ['iou', 'pq', 'sq', 'rq']
 
-                print("Occ-flow Val Results:")
-                for panoptic_key in out_metrics:
-                    print(panoptic_key)
-                    # HERE!! connect
-                    print(' & '.join(
-                        [f'{x:.1f}' for x in occ_results_computed[panoptic_key]]))
+            #     print("Occ-flow Val Results:")
+            #     for panoptic_key in out_metrics:
+            #         print(panoptic_key)
+            #         # HERE!! connect
+            #         print(' & '.join(
+            #             [f'{x:.1f}' for x in occ_results_computed[panoptic_key]]))
 
-                if 'num_occ' in occ_results_computed.keys() and 'ratio_occ' in occ_results_computed.keys():
-                    print(
-                        f"num occ evaluated:{occ_results_computed['num_occ']}")
-                    print(
-                        f"ratio occ evaluated: {occ_results_computed['ratio_occ'] * 100:.1f}%")
-            if 'planning_results_computed' in results.keys():
-                planning_results_computed = results['planning_results_computed']
-                planning_tab = PrettyTable()
-                planning_tab.title = f"{planning_evaluation_strategy}'s definition planning metrics"
-                planning_tab.field_names = [
-                    "metrics", "0.5s", "1.0s", "1.5s", "2.0s", "2.5s", "3.0s"]
-                for key in planning_results_computed.keys():
-                    value = planning_results_computed[key]
-                    row_value = []
-                    row_value.append(key)
-                    for i in range(len(value)):
-                        if planning_evaluation_strategy == "stp3":
-                            row_value.append("%.4f" % float(value[: i + 1].mean()))
-                        elif planning_evaluation_strategy == "uniad":
-                            row_value.append("%.4f" % float(value[i]))
-                        else:
-                            raise ValueError(
-                                "planning_evaluation_strategy should be uniad or spt3"
-                            )
-                    planning_tab.add_row(row_value)
-                print(planning_tab)
+            #     if 'num_occ' in occ_results_computed.keys() and 'ratio_occ' in occ_results_computed.keys():
+            #         print(
+            #             f"num occ evaluated:{occ_results_computed['num_occ']}")
+            #         print(
+            #             f"ratio occ evaluated: {occ_results_computed['ratio_occ'] * 100:.1f}%")
+            # if 'planning_results_computed' in results.keys():
+            #     planning_results_computed = results['planning_results_computed']
+            #     planning_tab = PrettyTable()
+            #     planning_tab.title = f"{planning_evaluation_strategy}'s definition planning metrics"
+            #     planning_tab.field_names = [
+            #         "metrics", "0.5s", "1.0s", "1.5s", "2.0s", "2.5s", "3.0s"]
+            #     for key in planning_results_computed.keys():
+            #         value = planning_results_computed[key]
+            #         row_value = []
+            #         row_value.append(key)
+            #         for i in range(len(value)):
+            #             if planning_evaluation_strategy == "stp3":
+            #                 row_value.append("%.4f" % float(value[: i + 1].mean()))
+            #             elif planning_evaluation_strategy == "uniad":
+            #                 row_value.append("%.4f" % float(value[i]))
+            #             else:
+            #                 raise ValueError(
+            #                     "planning_evaluation_strategy should be uniad or spt3"
+            #                 )
+            #         planning_tab.add_row(row_value)
+            #     print(planning_tab)
             results = results['bbox_results']  # get bbox_results
 
         result_files, tmp_dir = self.format_results(results, jsonfile_prefix)
@@ -1404,10 +1404,10 @@ class NuScenesE2EDataset(NuScenesDataset):
         output_dir = osp.join(*osp.split(result_path)[:-1])
         output_dir_det = osp.join(output_dir, 'det')
         output_dir_track = osp.join(output_dir, 'track')
-        output_dir_motion = osp.join(output_dir, 'motion')
+        output_dir_intent = osp.join(output_dir, 'intent')
         mmcv.mkdir_or_exist(output_dir_det)
         mmcv.mkdir_or_exist(output_dir_track)
-        mmcv.mkdir_or_exist(output_dir_motion)
+        mmcv.mkdir_or_exist(output_dir_intent)
 
         eval_set_map = {
             'v1.0-mini': 'mini_val',
@@ -1473,7 +1473,8 @@ class NuScenesE2EDataset(NuScenesDataset):
         # if 'map' in self.eval_mod:
         #     for i, ret_iou in enumerate(ret_ious):
         #         detail['iou_{}'.format(i)] = ret_iou
-
+        if 'intent' in self.eval_mod:
+            
         if 'motion' in self.eval_mod:
             self.nusc_eval_motion = MotionEval(
                 self.nusc,
