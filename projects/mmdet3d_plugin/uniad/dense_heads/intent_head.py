@@ -102,6 +102,51 @@ class IntentHead(BaseIntentHead):
 
         ret_dict = dict(losses=losses, outs_intent=outs_intent, track_boxes=track_boxes)
         return ret_dict
+    def forward_test(self, bev_embed, outs_track={}, outs_seg={}):
+        """Test function"""
+        track_query = outs_track['track_query_embeddings'][None, None, ...]
+        track_boxes = outs_track['track_bbox_results']
+        
+        track_query = torch.cat([track_query, outs_track['sdc_embedding'][None, None, None, :]], dim=2)
+        sdc_track_boxes = outs_track['sdc_track_bbox_results']
+
+        track_boxes[0][0].tensor = torch.cat([track_boxes[0][0].tensor, sdc_track_boxes[0][0].tensor], dim=0)
+        track_boxes[0][1] = torch.cat([track_boxes[0][1], sdc_track_boxes[0][1]], dim=0)
+        track_boxes[0][2] = torch.cat([track_boxes[0][2], sdc_track_boxes[0][2]], dim=0)
+        track_boxes[0][3] = torch.cat([track_boxes[0][3], sdc_track_boxes[0][3]], dim=0)
+
+        bboxes, scores, labels, bbox_index, mask = track_boxes[0]
+        labels[-1] = 0
+
+        if outs_seg != {}:
+            memory, memory_mask, memory_pos, lane_query, _, lane_query_pos, hw_lvl = outs_seg['args_tuple']
+            outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
+        else:
+            outs_intent = self(bev_embed, track_query, None, None, track_boxes)
+        
+
+        logits = outs_intent["all_intent_logits"]
+        logits_last = logits[-1] 
+
+        # use_sigmoid=False => softmax
+        intent_scores = F.softmax(logits_last, dim=-1)            # [B, N, C]
+        intent_label = torch.argmax(intent_scores, dim=-1)        # [B, N]
+        
+        B = intent_scores.shape[0]
+        result_intent = []
+        for bi in range(B):
+            result_intent.append(dict(
+                intent_scores=intent_scores[bi].detach().cpu().tolist(),  # [N,C]
+                intent_label=intent_label[bi].detach().cpu().tolist(),    # [N]
+                intent_bbox_index=bbox_index.detach().cpu().tolist(),     # [N] 用来和 tracking 结果对齐
+                # intent_track_scores=scores.detach().cpu().tolist(),       # [N] 可选：debug/过滤
+                # intent_track_labels=labels.detach().cpu().tolist(),       # [N] 可选：debug/按类 eval
+            ))
+
+        
+        return result_intent, None
+
+
     @auto_fp16(apply_to=('bev_embed', 'track_query', 'lane_query', 'lane_query_pos', 'lane_query_embed', 'prev_bev'))
     def forward(self, 
                 bev_embed, 

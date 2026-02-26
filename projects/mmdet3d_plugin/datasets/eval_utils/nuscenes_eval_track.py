@@ -157,7 +157,22 @@ def filter_eval_boxes(nusc: NuScenes,
         if filter_fov:
             print("=> After FOV filtering: %d" % fov_filter)
     return eval_boxes
-
+def load_pred_intent_map(result_path: str):
+    """
+    pred_intent[sample_token][tracking_id] = intent_label (int)
+    """
+    with open(result_path, 'r') as f:
+        data = json.load(f)
+    results = data.get('results', data)
+    pred_intent = {}
+    for sample_token, boxes in results.items():
+        mp = {}
+        if isinstance(boxes, list):
+            for b in boxes:
+                if isinstance(b, dict) and 'intent_label' in b:
+                    mp[str(b.get('tracking_id'))] = int(b['intent_label'])
+        pred_intent[sample_token] = mp
+    return pred_intent
 class TrackingEval:
     """
     This is the official nuScenes tracking evaluation code.
@@ -249,7 +264,187 @@ class TrackingEval:
         # Convert boxes to tracks format.
         self.tracks_gt = create_tracks(gt_boxes, nusc, self.eval_set, gt=True)
         self.tracks_pred = create_tracks(pred_boxes, nusc, self.eval_set, gt=False)
+        self.nusc = nusc
+        self.pred_boxes = pred_boxes
+        self.gt_boxes = gt_boxes
+    def evaluate_intent(self,
+                    data_infos,
+                    intent_data,
+                    intent_label_fn,
+                    output_dir=None,
+                    num_intent_classes=7,
+                    ignore_label=-1,
+                    eval_track_names=('car', 'truck', 'construction_vehicle', 'bus', 'trailer',
+                                      'motorcycle', 'bicycle', 'pedestrian'),
+                    intent_class_names=('STOPPED', 'MOVING', 'CROSSING',
+                                        'TURN_RIGHT', 'TURN_LEFT',
+                                        'LANE_CHANGE_RIGHT', 'LANE_CHANGE_LEFT'),
+                    score_thr=0.0):
+        """
+        Evaluate intent on matched TP pairs using tracking-style matching.
+        - pred intent: read from raw json (intent_label in each box dict)
+        - gt intent: computed from intent_data + (scene_token, frame_idx, instance_token)
+        - only evaluate tracking boxes whose tracking_name in eval_track_names
+        - report per-intent-class precision/recall/F1 + confusion matrix
+        """
 
+        if output_dir is None:
+            output_dir = os.path.join(self.output_dir, 'intent')
+        os.makedirs(output_dir, exist_ok=True)
+
+        eval_track_names = set(eval_track_names)
+        assert len(intent_class_names) == num_intent_classes, \
+            f"intent_class_names len {len(intent_class_names)} != num_intent_classes {num_intent_classes}"
+
+        # token -> (scene_token, frame_idx)
+        token2meta = {}
+        for info in data_infos:
+            tok = info.get('token', info.get('sample_idx', None))
+            if tok is None:
+                continue
+            token2meta[tok] = (info['scene_token'], int(info['frame_idx']))
+
+        # pred intent map from json (token -> tracking_id -> intent_label)
+        pred_intent = load_pred_intent_map(self.result_path)
+
+        # GT intent getter: gt_box.tracking_id is instance_token in devkit GT
+        def get_gt_intent(sample_token, gt_instance_token):
+            if sample_token not in token2meta:
+                return ignore_label
+            scene_token, frame_idx = token2meta[sample_token]
+            gt_tok = str(gt_instance_token)
+            if scene_token not in intent_data:
+                return ignore_label
+            if gt_tok not in intent_data[scene_token]:
+                return ignore_label
+            arr = intent_data[scene_token][gt_tok]["labels"]
+            return int(intent_label_fn(frame_idx, arr))
+
+        # Hungarian matching setup
+        dist_th = float(self.cfg.dist_th_tp)
+        try:
+            from scipy.optimize import linear_sum_assignment
+            use_scipy = True
+        except Exception:
+            use_scipy = False
+
+        cm = np.zeros((num_intent_classes, num_intent_classes), dtype=np.int64)
+
+        # per frame / per class matching
+        for sample_token in self.gt_boxes.sample_tokens:
+            gts_all = self.gt_boxes[sample_token]
+            prs_all = self.pred_boxes[sample_token]
+
+            gts_all = [b for b in gts_all if b.tracking_name in eval_track_names]
+            prs_all = [b for b in prs_all if b.tracking_name in eval_track_names and b.tracking_score >= score_thr]
+
+            if len(gts_all) == 0 or len(prs_all) == 0:
+                continue
+
+            # match per tracking class name (car/ped/...)
+            class_names = set([b.tracking_name for b in gts_all] + [b.tracking_name for b in prs_all])
+            for cls in class_names:
+                gts = [b for b in gts_all if b.tracking_name == cls]
+                prs = [b for b in prs_all if b.tracking_name == cls]
+                if len(gts) == 0 or len(prs) == 0:
+                    continue
+
+                gt_y, gt_xy = [], []
+                for b in gts:
+                    y = get_gt_intent(sample_token, b.tracking_id)
+                    if y < 0 or y >= num_intent_classes:
+                        continue
+                    gt_y.append(y)
+                    gt_xy.append(np.array(b.translation[:2], dtype=np.float32))
+                if len(gt_y) == 0:
+                    continue
+
+                pr_y, pr_xy = [], []
+                mp = pred_intent.get(sample_token, {})
+                for b in prs:
+                    tid = str(b.tracking_id)
+                    if tid not in mp:
+                        continue
+                    y = int(mp[tid][0]) if isinstance(mp[tid], tuple) else int(mp[tid])
+                    if y < 0 or y >= num_intent_classes:
+                        continue
+                    pr_y.append(y)
+                    pr_xy.append(np.array(b.translation[:2], dtype=np.float32))
+                if len(pr_y) == 0:
+                    continue
+
+                G, P = len(gt_y), len(pr_y)
+                cost = np.zeros((G, P), dtype=np.float32)
+                for i in range(G):
+                    for j in range(P):
+                        cost[i, j] = np.linalg.norm(gt_xy[i] - pr_xy[j])
+
+                if use_scipy:
+                    gi, pj = linear_sum_assignment(cost)
+                else:
+                    # greedy fallback
+                    gi, pj = [], []
+                    used = set()
+                    for i in range(G):
+                        j = int(np.argmin(cost[i]))
+                        if j not in used:
+                            gi.append(i); pj.append(j); used.add(j)
+
+                for i, j in zip(gi, pj):
+                    if cost[i, j] <= dist_th:
+                        cm[gt_y[i], pr_y[j]] += 1
+
+        # ---------- metrics ----------
+        total = int(cm.sum())
+        acc = float(np.trace(cm) / max(total, 1))
+
+        support = cm.sum(axis=1)   # GT count
+        predcnt = cm.sum(axis=0)   # predicted count
+        tp = np.diag(cm)
+
+        eps = 1e-12
+        prec = tp / np.maximum(predcnt, eps)
+        rec = tp / np.maximum(support, eps)
+        f1 = 2 * prec * rec / np.maximum(prec + rec, eps)
+
+        valid = support > 0
+        macro_f1 = float(np.mean(f1[valid])) if valid.any() else 0.0
+        macro_rec = float(np.mean(rec[valid])) if valid.any() else 0.0
+
+        per_class = {}
+        for i, name in enumerate(intent_class_names):
+            per_class[name] = {
+                'precision': float(prec[i]) if (support[i] > 0 or predcnt[i] > 0) else 0.0,
+                'recall': float(rec[i]) if support[i] > 0 else 0.0,
+                'f1': float(f1[i]) if support[i] > 0 else 0.0,
+                'support': int(support[i]),
+                'tp': int(tp[i]),
+                'pred_cnt': int(predcnt[i]),
+            }
+
+        summary = dict(
+            matched=total,
+            acc=acc,
+            macro_f1=macro_f1,
+            macro_recall=macro_rec,
+            per_class=per_class,
+            confusion=cm.tolist(),
+            eval_track_names=sorted(list(eval_track_names)),
+            dist_th_tp=dist_th,
+            score_thr=score_thr,
+        )
+
+        with open(os.path.join(output_dir, 'metrics_summary.json'), 'w') as f:
+            json.dump(summary, f, indent=2)
+
+        if self.verbose:
+            print(f"[IntentEval] matched={total}, acc={acc:.4f}, macro_f1={macro_f1:.4f}")
+            # 打印每类（更好 debug）
+            for name in intent_class_names:
+                m = per_class[name]
+                print(f"  {name:16s}  P={m['precision']:.3f}  R={m['recall']:.3f}  F1={m['f1']:.3f}  supp={m['support']}")
+
+        return summary
     def evaluate(self) -> Tuple[TrackingMetrics, TrackingMetricDataList]:
         """
         Performs the actual evaluation.

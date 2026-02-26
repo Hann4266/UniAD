@@ -81,7 +81,7 @@ def intent_label(index, action_array):
             if next_action in action_set:
                 return intent_dic[next_action]
             elif next_action=="STOPPED" or next_action == "Stopped":
-                next_moving = True
+                next_stop = True
         return intent_dic["STOPPED"] if next_stop else intent_dic["MOVING"]
     else:
         return -1
@@ -1045,6 +1045,19 @@ class NuScenesE2EDataset(NuScenesDataset):
 
             boxes = output_to_nusc_box(det)
             boxes_ego = copy.deepcopy(boxes)
+            
+            intent_token_map = None
+            if 'intent_label' in det:  
+                ilabs = det['intent_label']                 # list[N]
+                iscores = det.get('intent_scores', None)    # list[N][C] or None
+                intent_token_map = {}
+                L = min(len(boxes_ego), len(ilabs))
+                for j in range(L):
+                    tok = str(boxes_ego[j].token) 
+                    intent_token_map[tok] = {'intent_label': int(ilabs[j])}
+                    if iscores is not None and j < len(iscores):
+                        intent_token_map[tok]['intent_scores'] = iscores[j]
+            
             boxes, keep_idx = lidar_nusc_box_to_global(self.data_infos[sample_id], boxes,
                                                        mapped_class_names,
                                                        self.eval_detection_configs,
@@ -1108,6 +1121,12 @@ class NuScenesE2EDataset(NuScenesDataset):
                     predict_traj=traj_ego,
                     predict_traj_score=traj_scores,
                 )
+                if intent_token_map is not None:
+                    tid = str(nusc_anno['tracking_id'])  # tracking_id = box.token
+                    if tid in intent_token_map:
+                        nusc_anno['intent_label'] = intent_token_map[tid]['intent_label']
+                        if 'intent_scores' in intent_token_map[tid]:
+                            nusc_anno['intent_scores'] = intent_token_map[tid]['intent_scores']
                 annos.append(nusc_anno)
             nusc_annos[sample_token] = annos
         nusc_submissions = {
@@ -1400,7 +1419,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         """
 
         # TODO: fix the evaluation pipelines
-
+    
         output_dir = osp.join(*osp.split(result_path)[:-1])
         output_dir_det = osp.join(output_dir, 'det')
         output_dir_track = osp.join(output_dir, 'track')
@@ -1459,6 +1478,16 @@ class NuScenesE2EDataset(NuScenesDataset):
                 nusc_dataroot=self.data_root
             )
             self.nusc_eval_track.main()
+            if 'intent' in self.eval_mod:
+                intent_summary = self.nusc_eval_track.evaluate_intent(
+                    data_infos=self.data_infos,
+                    intent_data=self.intent_data,
+                    intent_label_fn=intent_label,
+                    output_dir=output_dir_intent
+                )
+                detail[f'{result_name}_Intent/acc'] = intent_summary['acc']
+                detail[f'{result_name}_Intent/macro_f1'] = intent_summary['macro_f1']
+                detail[f'{result_name}_Intent/macro_recall'] = intent_summary['macro_recall']
             # record metrics
             metrics = mmcv.load(
                 osp.join(
@@ -1473,7 +1502,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         # if 'map' in self.eval_mod:
         #     for i, ret_iou in enumerate(ret_ious):
         #         detail['iou_{}'.format(i)] = ret_iou
-        if 'intent' in self.eval_mod:
+        # if 'intent' in self.eval_mod:
             
         if 'motion' in self.eval_mod:
             self.nusc_eval_motion = MotionEval(
