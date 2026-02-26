@@ -131,7 +131,8 @@ class IntentHead(BaseIntentHead):
         # use_sigmoid=False => softmax
         intent_scores = F.softmax(logits_last, dim=-1)            # [B, N, C]
         intent_label = torch.argmax(intent_scores, dim=-1)        # [B, N]
-        
+        # print("labels",labels)
+        # print("intent_label",intent_label)
         B = intent_scores.shape[0]
         result_intent = []
         for bi in range(B):

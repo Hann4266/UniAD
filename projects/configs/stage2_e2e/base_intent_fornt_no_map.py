@@ -3,7 +3,7 @@ _base_ = ["../_base_/datasets/nus-3d.py",
 
 # Update-2023-06-12: 
 # [Enhance] Update some freezing args of UniAD 
-resume_from= "projects/work_dirs/stage2_e2e/base_intent_fornt_no_map/20260224_075110/epoch_10.pth "
+resume_from= "projects/work_dirs/stage2_e2e/base_intent_fornt_no_map/20260224_075110/epoch_10.pth"
 plugin = True
 plugin_dir = "projects/mmdet3d_plugin/ "
 # If point cloud range is changed, the models should also change their point
@@ -519,7 +519,7 @@ test_pipeline = [
     ),
 ]
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=1,
     workers_per_gpu=8,
     train=dict(
         type=dataset_type,
@@ -588,7 +588,7 @@ data = dict(
         use_nonlinear_optimizer=use_nonlinear_optimizer,
         classes=class_names,
         modality=input_modality,
-        eval_mod=['det', 'map', 'track','motion'],
+        eval_mod=['det', 'map', 'track','intent'],
     ),
     shuffler_sampler=dict(type="DistributedGroupSampler"),
     nonshuffler_sampler=dict(type="DistributedSampler"),

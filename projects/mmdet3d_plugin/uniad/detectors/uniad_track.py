@@ -766,7 +766,7 @@ class UniADTrack(MVXTwoStageDetector):
         get_keys = ["bev_embed", "bev_pos", 
                     "track_query_embeddings", "track_bbox_results", 
                     "boxes_3d", "scores_3d", "labels_3d", "track_scores", "track_ids"]
-        if self.with_motion_head:
+        if self.with_intent_head:
             get_keys += ["sdc_boxes_3d", "sdc_scores_3d", "sdc_track_scores", "sdc_track_bbox_results", "sdc_embedding"]
         results[0].update({k: frame_res[k] for k in get_keys})
         results = self._det_instances2results(track_instances_fordet, results, img_metas)
