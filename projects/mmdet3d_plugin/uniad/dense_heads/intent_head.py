@@ -59,6 +59,19 @@ class IntentHead(BaseIntentHead):
         self._build_loss(loss_cls)
         self._build_layers(transformerlayers, det_layer_num)
         self._init_layers()
+        self.obj_type_embed = nn.Embedding(3, embed_dims)
+
+    def _get_obj_type_ids(self, labels):
+        """
+        labels: (N,) detection class ids
+        returns: (N,) type ids  0=ped, 1=veh, 2=ignore
+        """
+        type_ids = torch.full_like(labels, 2)  # default: ignore
+        for cid in self.vehicle_id_list:
+            type_ids[labels == cid] = 1
+        for cid in self.ped_id_list:
+            type_ids[labels == cid] = 0
+        return type_ids
 
     def forward_train(self, 
                 bev_embed,
@@ -116,6 +129,7 @@ class IntentHead(BaseIntentHead):
         track_boxes[0][3] = torch.cat([track_boxes[0][3], sdc_track_boxes[0][3]], dim=0)
 
         bboxes, scores, labels, bbox_index, mask = track_boxes[0]
+
         labels[-1] = 0
 
         if outs_seg != {}:
@@ -128,20 +142,19 @@ class IntentHead(BaseIntentHead):
         logits = outs_intent["all_intent_logits"]
         logits_last = logits[-1] 
 
-        # use_sigmoid=False => softmax
-        intent_scores = F.softmax(logits_last, dim=-1)            # [B, N, C]
-        intent_label = torch.argmax(intent_scores, dim=-1)        # [B, N]
-        # print("labels",labels)
-        # print("intent_label",intent_label)
+        allowed, _ = self._build_allowed_mask_and_ignore(labels)  # (N, C)
+        neg_inf = torch.finfo(logits_last.dtype).min
+
         B = intent_scores.shape[0]
         result_intent = []
         for bi in range(B):
+            masked_logits = logits_last[bi].masked_fill(~allowed, neg_inf)  # (N, C)
+            intent_scores = F.softmax(masked_logits, dim=-1)
+            intent_label = torch.argmax(intent_scores, dim=-1)
             result_intent.append(dict(
                 intent_scores=intent_scores[bi].detach().cpu().tolist(),  # [N,C]
                 intent_label=intent_label[bi].detach().cpu().tolist(),    # [N]
-                intent_bbox_index=bbox_index.detach().cpu().tolist(),     # [N] 用来和 tracking 结果对齐
-                # intent_track_scores=scores.detach().cpu().tolist(),       # [N] 可选：debug/过滤
-                # intent_track_labels=labels.detach().cpu().tolist(),       # [N] 可选：debug/按类 eval
+                intent_bbox_index=bbox_index.detach().cpu().tolist(),     # [N] 
             ))
 
         
@@ -178,7 +191,14 @@ class IntentHead(BaseIntentHead):
 
         # extract the last frame of the track query
         track_query = track_query[:, -1]
-        
+        B, A, D = track_query.shape
+        labels = track_bbox_results[0][2]
+        obj_type_ids = self._get_obj_type_ids(labels)  
+        obj_type_ids = obj_type_ids.to(device)        
+        obj_type_ids = obj_type_ids.unsqueeze(0).expand(B, -1)  # (B, A)
+        type_emb = self.obj_type_embed(obj_type_ids)            # (B, A, D)
+        intent_query = track_query + type_emb                    # (B, A, D)
+
         # encode the center point of the track query
         reference_points_track = self._extract_tracking_centers(
             track_bbox_results, self.pc_range).to(device)
@@ -189,7 +209,7 @@ class IntentHead(BaseIntentHead):
         all_logits = []
 
         inter_states = self.intentformer(
-            track_query,  # B, A_track, D
+            intent_query,  # B, A_track, D
             lane_query,  # B, M, D
             track_query_pos=track_query_pos,
             lane_query_pos=lane_query_pos,
@@ -249,26 +269,19 @@ class IntentHead(BaseIntentHead):
             loss_dict[f"d{d}.loss_intent"] = li * self.loss_weight
         return loss_dict
     def _loss_single_layer(self, logits, matched_idxes, gt_intent_labels, gt_det_labels_last):
-        """
-        logits: (B, A, C)
-        matched_idxes: (B, A)   -1 means unmatched
-        gt_intent_labels: list[tensor(num_gt)]  each label in [0, C-1] or -1(ignore)
-        gt_det_labels_last: list[tensor(num_gt)] detection class id for masking VEH/PED/IGN
-        """
         B, A, C = logits.shape
         device = logits.device
 
-        xs, ys, allowed_all = [], [], []
+        xs, ys, allowed_all, is_ped_all = [], [], [], []
 
         for b in range(B):
-            midx = matched_idxes[b]  # (A,)
+            midx = matched_idxes[b]
             valid_q = (midx >= 0)
             if valid_q.sum() == 0:
                 continue
 
-            gt_idx = midx[valid_q].long()  # (Nq_valid,)
+            gt_idx = midx[valid_q].long()
 
-            # 防御性检查：避免 index 越界
             num_gt_int = gt_intent_labels[b].numel()
             num_gt_det = gt_det_labels_last[b].numel()
             in_range = (gt_idx >= 0) & (gt_idx < num_gt_int) & (gt_idx < num_gt_det)
@@ -276,48 +289,55 @@ class IntentHead(BaseIntentHead):
                 continue
 
             gt_idx = gt_idx[in_range]
+            x_b   = logits[b, valid_q, :][in_range]
+            y_b   = gt_intent_labels[b][gt_idx].to(device).long()
+            det_b = gt_det_labels_last[b][gt_idx].to(device).long()
 
-            # 对应 query logits（先按 valid_q 取，再按 in_range 取）
-            x_b = logits[b, valid_q, :][in_range]                       # (N, C)
-            y_b = gt_intent_labels[b][gt_idx].to(device).long()         # (N,)
-            det_b = gt_det_labels_last[b][gt_idx].to(device).long()     # (N,)
-
-            # ignore gt_intent = -1
             keep = (y_b >= 0) & (y_b < C)
-
-            # type-based allowed mask + ignore mask
-            allowed_b, ign_b = self._build_allowed_mask_and_ignore(det_b)  # (N,C), (N,)
+            allowed_b, ign_b = self._build_allowed_mask_and_ignore(det_b)
             keep = keep & (~ign_b)
-
-            # 如果 GT intent 对于该 object type 不合法，也直接丢掉（防止脏标注）
             row_idx = torch.arange(y_b.numel(), device=device)
             keep = keep & allowed_b[row_idx, y_b.clamp(min=0, max=C - 1)]
 
             if keep.sum() == 0:
                 continue
-            xs.append(x_b[keep])               # (N_keep, C)
-            ys.append(y_b[keep])               # (N_keep,)
-            allowed_all.append(allowed_b[keep])# (N_keep, C)
 
-        # no valid sample -> zero loss
+            #  ped 
+            is_ped_b = torch.zeros(det_b.shape, dtype=torch.bool, device=device)
+            for cid in self.ped_id_list:
+                is_ped_b |= (det_b == cid)
+
+            xs.append(x_b[keep])
+            ys.append(y_b[keep])
+            allowed_all.append(allowed_b[keep])
+            is_ped_all.append(is_ped_b[keep])
+
         if len(xs) == 0:
             return logits.sum() * 0.0
 
-        x = torch.cat(xs, dim=0)
-        y = torch.cat(ys, dim=0)
+        x       = torch.cat(xs, dim=0)
+        y       = torch.cat(ys, dim=0)
         allowed = torch.cat(allowed_all, dim=0)
+        is_ped  = torch.cat(is_ped_all, dim=0)   # (N_keep,) bool
 
-        # 用 per-class weight（如果配置了 class_weight），否则用 focal_alpha 标量
-        alpha = self.intent_class_weight if getattr(self, "intent_class_weight", None) is not None else self.focal_alpha
+        alpha = self.intent_class_weight if self.intent_class_weight is not None else self.focal_alpha
 
-        return self.masked_softmax_focal_loss(
+        # per-sample loss
+        loss_per = self.masked_softmax_focal_loss(
             logits=x,
             target=y,
-            allowed_mask=allowed,   # vehicle/ped class-specific valid intent masking
+            allowed_mask=allowed,
             gamma=self.focal_gamma,
             alpha=alpha,
-            reduction="mean"
+            reduction="none"  
         )
+
+        # ped/veh 分组 mean，再加权合并
+        is_veh = ~is_ped
+        veh_loss = loss_per[is_veh].mean() if is_veh.any() else loss_per.sum() * 0.0
+        ped_loss = loss_per[is_ped].mean() if is_ped.any() else loss_per.sum() * 0.0
+
+        return veh_loss + ped_loss * self.ped_loss_weight
     def _last_frame_gt_intent_labels(self, gt_intent_labels):
         """
         Normalize gt_intent_labels to list[Tensor(num_gt)] for the LAST frame.
@@ -447,11 +467,11 @@ class IntentHead(BaseIntentHead):
         # intent ids
         INT_STOP   = 0
         INT_MOVING = 1
-        INT_LCL    = 2
-        INT_LCR    = 3
-        INT_TL     = 4
-        INT_TR     = 5
-        INT_CROSS  = 6
+        INT_CROSS  = 2 
+        INT_TR     = 3  # ← TURN_RIGHT
+        INT_TL     = 4  # ← TURN_LEFT
+        INT_LCR    = 5  # ← LANE_CHANGE_RIGHT
+        INT_LCL    = 6  # ← LANE_CHANGE_LEFT
 
         allowed = torch.zeros((N, C), dtype=torch.bool, device=device)
 

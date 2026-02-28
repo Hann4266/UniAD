@@ -380,7 +380,6 @@ class NuScenesE2EDataset(NuScenesDataset):
         self.occ_filter_invalid_sample = occ_filter_invalid_sample
         self.occ_filter_by_valid_flag = occ_filter_by_valid_flag
         self.occ_only_total_frames = 7  # NOTE: hardcode, not influenced by planning
-
     def __len__(self):
         if not self.is_debug:
             return len(self.data_infos)

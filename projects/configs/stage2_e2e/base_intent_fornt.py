@@ -3,7 +3,7 @@ _base_ = ["../_base_/datasets/nus-3d.py",
 
 # Update-2023-06-12: 
 # [Enhance] Update some freezing args of UniAD 
-# resume_from="/zihan-west-vol/work_dirs/stage2_e2e/base_intent_fornt/epoch_10.pth"
+# resume_from="/zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260227_015525/epoch_1.pth"
 plugin = True
 plugin_dir = "projects/mmdet3d_plugin/"
 # If point cloud range is changed, the models should also change their point
@@ -348,7 +348,18 @@ model = dict(
             use_sigmoid=False, 
             gamma=2.0,
             alpha=0.25,
-            loss_weight=5.0),
+            loss_weight=5.0,
+            ped_loss_weight=2.0,
+            class_weight=[
+                0.18,   # 0: STOPPED        
+                0.32,   # 1: MOVING         
+                3.0,    # 2: CROSSING        
+                6.0,    # 3: TURN_RIGHT      
+                4.4,    # 4: TURN_LEFT       
+                21.8,   # 5: LANE_CHANGE_RIGHT 
+                12.3,   # 6: LANE_CHANGE_LEFT  
+            ]
+        ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',   
             pc_range=point_cloud_range,

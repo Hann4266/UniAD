@@ -31,7 +31,7 @@ python -m pip install -U pip setuptools wheel
 python -m pip install -U wandb==0.24.2
 wandb login
 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
-
+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
 git clone https://github.com/Hann4266/UniAD.git
 cd UniAD
 ln -s /zihan-west-vol/UniAD/ckpts ./ckpts
@@ -41,7 +41,7 @@ ln -s /zihan-west-vol/work_dirs ./projects/work_dirs
  ./ckpts
 #train
 ./tools/uniad_dist_train.sh ./projects/configs/stage1_track_map/base_track_map_front.py 1
-./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt.py 8
+./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt.py 1
 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_map.py 8
 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_interaction.py 8
 
