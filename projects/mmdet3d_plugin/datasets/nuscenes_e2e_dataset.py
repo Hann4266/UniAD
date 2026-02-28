@@ -312,7 +312,7 @@ class NuScenesE2EDataset(NuScenesDataset):
         # init before super init since it is called in parent class
         self.file_client_args = file_client_args
         self.file_client = mmcv.FileClient(**file_client_args)
-        intent_file = "/zihan-west-vol/UniAD/data/nuscenes/unified_map_v2/all_scenes_compact.json"
+        intent_file = "/zihan-west-vol/UniAD/data/nuscenes/unified_map_v3/all_scenes_compact_new.json"
         with open(intent_file, 'r') as f:
             self.intent_data = json.load(f)
         self.is_debug = is_debug

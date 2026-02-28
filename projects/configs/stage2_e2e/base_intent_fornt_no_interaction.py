@@ -348,7 +348,10 @@ model = dict(
             use_sigmoid=False, 
             gamma=2.0,
             alpha=0.25,
-            loss_weight=5.0),
+            loss_weight=5.0
+            ped_loss_weight=2.0,
+            class_weight=[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+        ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',   
             pc_range=point_cloud_range,
@@ -589,7 +592,7 @@ data = dict(
         use_nonlinear_optimizer=use_nonlinear_optimizer,
         classes=class_names,
         modality=input_modality,
-        eval_mod=['det', 'map', 'track','motion'],
+        eval_mod=['det', 'map', 'track','intent'],
     ),
     shuffler_sampler=dict(type="DistributedGroupSampler"),
     nonshuffler_sampler=dict(type="DistributedSampler"),

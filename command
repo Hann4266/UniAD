@@ -15,6 +15,8 @@ cd ..
 pip install -r requirements.txt
 pip install -U "yapf==0.32.0"
 pip install -U "numpy==1.21.6"
+
+
 #dataset
 tar -xvzf /cogrob-avl-west-vol/nuScenes/compressed/v1.0-trainval_meta.tgz
 apt update && apt install -y unzip
@@ -35,10 +37,12 @@ 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
 git clone https://github.com/Hann4266/UniAD.git
 cd UniAD
 ln -s /zihan-west-vol/UniAD/ckpts ./ckpts
-ln -s /zihan-west-vol/UniAD/data ./data
+mkdir data
+ln -s /zihan-west-vol/UniAD/data/infos ./data/infos
+ln -s /zihan-west-vol/UniAD/data/others ./data/others
+ln -s /root/nuscenes ./data/nuscenes
 ln -s /zihan-west-vol/work_dirs ./projects/work_dirs
-./data 
- ./ckpts
+
 #train
 ./tools/uniad_dist_train.sh ./projects/configs/stage1_track_map/base_track_map_front.py 1
 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt.py 1

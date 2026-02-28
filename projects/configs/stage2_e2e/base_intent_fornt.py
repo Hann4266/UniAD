@@ -350,15 +350,7 @@ model = dict(
             alpha=0.25,
             loss_weight=5.0,
             ped_loss_weight=2.0,
-            class_weight=[
-                0.18,   # 0: STOPPED        
-                0.32,   # 1: MOVING         
-                3.0,    # 2: CROSSING        
-                6.0,    # 3: TURN_RIGHT      
-                4.4,    # 4: TURN_LEFT       
-                21.8,   # 5: LANE_CHANGE_RIGHT 
-                12.3,   # 6: LANE_CHANGE_LEFT  
-            ]
+            class_weight= [1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
         ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',   

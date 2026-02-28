@@ -259,10 +259,10 @@ if __name__ == "__main__":
     parser.add_argument("--ann_file",     required=True,
                         help="Path to nuscenes_infos_train.pkl (or mini)")
     parser.add_argument("--intent_file",
-                        default="/zihan-west-vol/UniAD/data/nuscenes/unified_map_v2/all_scenes_compact.json",
+                        default="/zihan-west-vol/UniAD/data/nuscenes/unified_map_v3/all_scenes_compact.json",
                         help="Path to all_scenes_compact.json")
     parser.add_argument("--point_cloud_range", type=float, nargs=6,
-                        default=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0],
+                        default=[-51.2, 0, -5.0, 51.2, 51.2, 3.0],
                         metavar=("X_MIN","Y_MIN","Z_MIN","X_MAX","Y_MAX","Z_MAX"),
                         help="Same as ObjectRangeFilterTrack point_cloud_range")
     parser.add_argument("--fov_deg", type=float, default=70.0,
