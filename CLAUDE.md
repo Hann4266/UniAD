@@ -106,7 +106,7 @@ cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_
 
 ## Performance Comparison
 ### LOKI (epoch 6, pre-FOV-filter, single front camera)
-- mAP: 0.0952, NDS: 0.1628, AMOTA: 0.1007
+- mAP: 0.2284, NDS: 0.2472, AMOTA: 0.2619
 
 ### nuScenes UniAD reference (6 cameras)
 - mAP: 0.368, AMOTA: 0.349 (UniAD(5) from paper)
