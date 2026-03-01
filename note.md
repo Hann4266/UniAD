@@ -134,6 +134,47 @@ Per-class Tracking:
 {'Pedestrian/AP_d0.5': 0.0002581533394952145, 'Pedestrian/AP_d1.0': 0.03559626159406073, 'Pedestrian/AP_d2.0': 0.15878857657520123, 'Pedestrian/AP_d4.0': 0.31424232350820486, 'Pedestrian/trans_err': 0.9865948738330526, 'Pedestrian/scale_err': 0.25772911009875, 'Pedestrian/orient_err': 1.048721435450146, 'Pedestrian/vel_err': 1.7650855020789418, 'Car/AP_d0.5': 0.013568381013869826, 'Car/AP_d1.0': 0.08870366109851562, 'Car/AP_d2.0': 0.2011114747679404, 'Car/AP_d4.0': 0.333719950330202, 'Car/trans_err': 0.7848297221162005, 'Car/scale_err': 0.19283001930213398, 'Car/orient_err': 0.2538592077161936, 'Car/vel_err': 2.168306664313805, 'Bus/AP_d0.5': 0.0, 'Bus/AP_d1.0': 0.0, 'Bus/AP_d2.0': 0.0, 'Bus/AP_d4.0': 0.015901923812362436, 'Bus/trans_err': 1.057618576074681, 'Bus/scale_err': 0.29051658921562307, 'Bus/orient_err': 0.1484839990288613, 'Bus/vel_err': 2.415760242070436, 'Truck/AP_d0.5': 0.002381417188755745, 'Truck/AP_d1.0': 0.07275395146465274, 'Truck/AP_d2.0': 0.1895848477883309, 'Truck/AP_d4.0': 0.3183180145675947, 'Truck/trans_err': 0.8004201056890857, 'Truck/scale_err': 0.25821621144489615, 'Truck/orient_err': 0.12232085395846029, 'Truck/vel_err': 1.6148242541853015, 'Van/AP_d0.5': 0.0, 'Van/AP_d1.0': 0.0, 'Van/AP_d2.0': 0.0, 'Van/AP_d4.0': 0.0, 'Van/trans_err': 1.0, 'Van/scale_err': 1.0, 'Van/orient_err': 1.0, 'Van/vel_err': 1.0, 'Motorcyclist/AP_d0.5': 0.04615476590498459, 'Motorcyclist/AP_d1.0': 0.17610894531573423, 'Motorcyclist/AP_d2.0': 0.3114294775460295, 'Motorcyclist/AP_d4.0': 0.3801391330477175, 'Motorcyclist/trans_err': 0.6222461534838485, 'Motorcyclist/scale_err': 0.2563817958807943, 'Motorcyclist/orient_err': 0.12383769528432904, 'Motorcyclist/vel_err': 1.6036226051159557, 'Bicyclist/AP_d0.5': 0.0003370408428484704, 'Bicyclist/AP_d1.0': 0.044143486017231275, 'Bicyclist/AP_d2.0': 0.12721779589879412, 'Bicyclist/AP_d4.0': 0.21515569897951298, 'Bicyclist/trans_err': 0.8240786506571932, 'Bicyclist/scale_err': 0.21813824566761175, 'Bicyclist/orient_err': 0.539358058536934, 'Bicyclist/vel_err': 2.344968465916306, 'Other/AP_d0.5': 0.0, 'Other/AP_d1.0': 0.0, 'Other/AP_d2.0': 0.0, 'Other/AP_d4.0': 0.0, 'Other/trans_err': 1.0, 'Other/scale_err': 1.0, 'Other/orient_err': 1.0, 'Other/vel_err': 1.0, 'mAP': 0.09517547751881372, 'NDS': 0.16276047246642192, 'mtrans_err': 0.8844735102317577, 'mscale_err': 0.43422649645122613, 'morient_err': 0.5295726562468656, 'mvel_err': 1.7390709667100932, 'track/amota': 0.10070040219855408, 'track/amotp': 1.7495501425428202, 'track/recall': 0.17372541090987118, 'track/mota': 0.09909007535417556, 'track/motp': 0.9289041750734146, 'track/ids': 680.0, 'track/frag': 735.0, 'track/tid': 8.41622240332753, 'track/lgd': 12.920145198414582, 'track/Bicyclist/amota': 0.06074272951287159, 'track/Bicyclist/amotp': 1.7774816800955933, 'track/Bus/amota': 0.0, 'track/Bus/amotp': 2.0, 'track/Car/amota': 0.1520386490879157, 'track/Car/amotp': 1.6280022115460024, 'track/Motorcyclist/amota': 0.24967814824003431, 'track/Motorcyclist/amotp': 1.5379696165677745, 'track/Pedestrian/amota': 0.008701097074631783, 'track/Pedestrian/amotp': 1.8893583134310696, 'track/Truck/amota': 0.13304178927587113, 'track/Truck/amotp': 1.6644890336164821}
 
 
+## Stage 2: Intent Head Training
+
+### Train command (8 GPU)
+```bash
+cd /root/UniAD && PYTHONPATH="$(pwd)/projects:$(pwd):$PYTHONPATH" \
+python3 -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=28596 \
+    tools/train.py projects/configs/loki/loki_stage2_intent.py \
+    --launcher pytorch --deterministic \
+    --work-dir /mnt/storage/UniAD/work_dirs/stage_2_base
+```
+
+### Config: projects/configs/loki/loki_stage2_intent.py
+- `load_from`: `/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_10.pth`
+- `data_root`: `/root/loki_data/`
+- Frozen: backbone, neck, BN, BEV encoder (only intent head trains)
+- `num_intent=7`, `map_features=False`, 3 decoder layers
+- Loss: masked softmax focal loss, class_weight=[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+
+### Intent label mapping (in create_loki_infos.py)
+- Vehicles use `vehicle_state` column: Stopped/Parked→0, Other moving→1, LCL/Cut-in-left→2, LCR/Cut-in-right→3, TL→4, TR→5
+- Pedestrians use `intended_actions` column: Stopped/Waiting→0, Moving→1, Crossing→6
+- All valid agents have labels (0% unknown)
+- Train distribution: MOVING 50%, STOP 40%, CROSS 6%, TL 1.8%, TR 1.6%, LCL 0.3%, LCR 0.3%
+
+### Files changed for intent (loki branch)
+- `tools/create_loki_infos.py` — gt_intent_labels in pkl
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — get_ann_info reads from pkl, union2one propagates
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — forward_train/forward_test for no-map
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — map_features=False support
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — forward_test intent without seg_head
+- `projects/configs/loki/loki_stage2_intent.py` — new config
+
+### Regenerate pkl (required once)
+```bash
+cd /root/UniAD && python tools/create_loki_infos.py \
+    --data-root /root/loki_data --out-dir data/infos
+```
+
+---
+
 # LOKI Dataset Adaptation for UniAD
 
 ## Dataset Characteristics

@@ -296,9 +296,12 @@ class LokiE2EDataset(Custom3DDataset):
 
         # Zero-filled trajectories (NuScenes uses traj_api.get_traj_label)
         n_valid = len(gt_labels_3d)
-        # Intent labels are unavailable in LOKI. Keep a dummy vector so
-        # UniAD pipeline transforms that expect this key remain compatible.
-        gt_labels_intent = np.zeros((n_valid,), dtype=np.int64)
+        # Intent labels from pkl (populated by create_loki_infos.py).
+        # -1 = unknown/unlabeled (ignored in loss).
+        if 'gt_intent_labels' in info:
+            gt_labels_intent = info['gt_intent_labels'][mask].copy()
+        else:
+            gt_labels_intent = np.full(n_valid, -1, dtype=np.int64)
         gt_fut_traj = np.zeros((n_valid, self.predict_steps, 2), dtype=np.float32)
         gt_fut_traj_mask = np.zeros((n_valid, self.predict_steps, 2), dtype=np.float32)
         gt_past_traj = np.zeros((n_valid, self.past_steps + self.fut_steps, 2), dtype=np.float32)
@@ -576,6 +579,8 @@ class LokiE2EDataset(Custom3DDataset):
         """
         imgs_list = [each['img'].data for each in queue]
         gt_labels_3d_list = [each['gt_labels_3d'].data for each in queue]
+       
+        gt_labels_intent_list = [to_tensor(each['gt_labels_intent']) for each in queue] if 'gt_labels_intent' in queue[0] else None
         gt_sdc_label_list = [each['gt_sdc_label'].data for each in queue]
         gt_inds_list = [to_tensor(each['gt_inds']) for each in queue]
         gt_bboxes_3d_list = [each['gt_bboxes_3d'].data for each in queue]
@@ -625,6 +630,8 @@ class LokiE2EDataset(Custom3DDataset):
         queue = queue[-1]
 
         queue['gt_labels_3d'] = DC(gt_labels_3d_list)
+        if gt_labels_intent_list is not None:
+            queue['gt_labels_intent'] = DC(gt_labels_intent_list)
         queue['gt_sdc_label'] = DC(gt_sdc_label_list)
         queue['gt_inds'] = DC(gt_inds_list)
         queue['gt_bboxes_3d'] = DC(gt_bboxes_3d_list, cpu_only=True)

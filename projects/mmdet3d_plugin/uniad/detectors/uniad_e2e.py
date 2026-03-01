@@ -315,11 +315,11 @@ class UniAD(UniADTrack):
         
         bev_embed = result_track[0]["bev_embed"]
 
+        result_seg = [{}]
         if self.with_seg_head:
             result_seg =  self.seg_head.forward_test(bev_embed, gt_lane_labels, gt_lane_masks, img_metas, rescale)
         if self.with_intent_head:
             result_intent, outs_intent = self.intent_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
-            outs_intent['bev_pos'] = result_track[0]['bev_pos']
         if self.with_motion_head:
             result_motion, outs_motion = self.motion_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
             outs_motion['bev_pos'] = result_track[0]['bev_pos']
@@ -360,6 +360,8 @@ class UniAD(UniADTrack):
                 for k, v in result_seg[0]['pts_bbox'].items():
                     if hasattr(v, 'cpu'):
                         result_seg[0]['pts_bbox'][k] = v.cpu()
+        if self.with_intent_head:
+            result_intent[0] = pop_elem_in_result(result_intent[0])
         if self.with_motion_head:
             result_motion[0] = pop_elem_in_result(result_motion[0])
         if self.with_occ_head:
@@ -369,6 +371,8 @@ class UniAD(UniADTrack):
         for i, res in enumerate(result):
             res['token'] = img_metas[i]['sample_idx']
             res.update(result_track[i])
+            if self.with_intent_head:
+                res.update(result_intent[i])
             if self.with_motion_head:
                 res.update(result_motion[i])
             if self.with_seg_head:

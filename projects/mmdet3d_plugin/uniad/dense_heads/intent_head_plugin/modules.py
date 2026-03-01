@@ -25,27 +25,34 @@ class IntentTransformerDecoder(BaseModule):
       output inter_states: (L, B, A, D)
     """
 
-    def __init__(self, pc_range=None, bev_h=100, bev_w=200, embed_dims=256, transformerlayers=None, num_layers=3, **kwargs):
+    def __init__(self, pc_range=None, bev_h=100, bev_w=200, embed_dims=256,
+                 map_features=True, transformerlayers=None, num_layers=3, **kwargs):
         super(IntentTransformerDecoder, self).__init__()
         self.pc_range = pc_range
         self.bev_h = bev_h
         self.bev_w = bev_w
         self.embed_dims = embed_dims
         self.num_layers = num_layers
+        self.map_features = map_features
 
-        # agent-agent and agent-map interactions (same spirit as MotionTransformerDecoder)
+        # agent-agent interaction
         self.track_agent_interaction_layers = nn.ModuleList(
             [TrackAgentInteraction(embed_dims=embed_dims) for _ in range(self.num_layers)]
         )
-        self.map_interaction_layers = nn.ModuleList(
-            [MapInteraction(embed_dims=embed_dims) for _ in range(self.num_layers)]
-        )
+        # agent-map interaction (only used when map_features=True)
+        if self.map_features:
+            self.map_interaction_layers = nn.ModuleList(
+                [MapInteraction(embed_dims=embed_dims) for _ in range(self.num_layers)]
+            )
+        # agent-bev interaction
         self.bev_interaction_layers = nn.ModuleList(
             [build_transformer_layer(transformerlayers) for _ in range(self.num_layers)]
         )
 
+        # fuser: 4*D with map, 3*D without map
+        fuser_in = self.embed_dims * 4 if self.map_features else self.embed_dims * 3
         self.out_query_fuser = nn.Sequential(
-            nn.Linear(self.embed_dims * 4, self.embed_dims * 2),
+            nn.Linear(fuser_in, self.embed_dims * 2),
             nn.ReLU(),
             nn.Linear(self.embed_dims * 2, self.embed_dims),
         )
@@ -75,12 +82,7 @@ class IntentTransformerDecoder(BaseModule):
                 query_embed, track_query, query_pos=track_query_pos, key_pos=track_query_pos
             )
 
-            # agent-map interaction
-            map_query_embed = self.map_interaction_layers[lid](
-                query_embed, lane_query, query_pos=track_query_pos, key_pos=lane_query_pos
-            )
-
-            # agent-bev interaction 
+            # agent-bev interaction
             bev_query_embed = self.bev_interaction_layers[lid](
                 query_embed,                     # (B, A, D)
                 value=bev_embed,                 # (H*W, B, D)
@@ -89,14 +91,22 @@ class IntentTransformerDecoder(BaseModule):
                 spatial_shapes=torch.tensor([[self.bev_h, self.bev_w]], device=query_embed.device),
                 level_start_index=torch.tensor([0], device=query_embed.device),
             )
-            query_embed = torch.cat(
-                [track_query_embed, map_query_embed, bev_query_embed, track_query + track_query_pos],
-                dim=-1
-            )
-            # query_embed = torch.cat(
-            #     [track_query_embed, map_query_embed, track_query + track_query_pos],
-            #     dim=-1
-            # )
+
+            if self.map_features and lane_query is not None:
+                # agent-map interaction
+                map_query_embed = self.map_interaction_layers[lid](
+                    query_embed, lane_query, query_pos=track_query_pos, key_pos=lane_query_pos
+                )
+                query_embed = torch.cat(
+                    [track_query_embed, map_query_embed, bev_query_embed, track_query + track_query_pos],
+                    dim=-1
+                )
+            else:
+                query_embed = torch.cat(
+                    [track_query_embed, bev_query_embed, track_query + track_query_pos],
+                    dim=-1
+                )
+
             query_embed = self.out_query_fuser(query_embed)
             intermediate.append(query_embed)
 

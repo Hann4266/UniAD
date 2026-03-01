@@ -45,10 +45,7 @@ The FOV filter only checks angular position — agents within the 60° cone but 
 - `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `gt_camera_visible` in `get_ann_info()` and `get_data_info()`
 
 ### Compatibility notes (training stability)
-- `gt_labels_intent` KeyError fix:
-  - Cause: `ObjectRangeFilterTrack` expects `gt_labels_intent`, but LOKI has no intent labels.
-  - Fix: `LokiE2EDataset.get_ann_info()` now always emits dummy intent labels (`zeros`), and annotation loaders pass through `gt_labels_intent` when present.
-  - Files: `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py`, `projects/mmdet3d_plugin/datasets/pipelines/loading.py`, `projects/mmdet3d_plugin/datasets/pipelines/loki_loading.py`.
+- `gt_labels_intent` now populated with real LOKI intent labels from pkl (see Intent Head section below).
 - Resume vs load behavior:
   - Use `resume_from` only when optimizer parameter groups match checkpoint.
   - If model params changed (e.g., adding/removing trainable modules), resume can fail with `different number of parameter groups`; use `load_from` instead.
@@ -58,6 +55,82 @@ The FOV filter only checks angular position — agents within the 60° cone but 
 cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_infos.py \
     --data-root /mnt/storage/loki_data --out-dir data/infos
 ```
+
+## Intent Head (Stage 2)
+
+### Overview
+Stage 2 training adds an intent prediction head on top of the frozen stage-1 perception model. The intent head predicts per-agent intent (7 classes) from tracked object queries using agent-agent, agent-BEV, and optionally agent-map interactions.
+
+### Intent Classes (7)
+| ID | Name | Vehicle Source | Pedestrian Source |
+|----|------|---------------|-------------------|
+| 0 | STOPPED | Stopped, Parked | Stopped, Waiting to cross |
+| 1 | MOVING | Other moving | Moving |
+| 2 | LCL | Lane change to the left, Cut in to the left | — |
+| 3 | LCR | Lane change to the right, Cut in to the right | — |
+| 4 | TL | Turn left | — |
+| 5 | TR | Turn right | — |
+| 6 | CROSSING | — | Crossing the road |
+
+LOKI class IDs for intent masking: `vehicle_id_list=[1,2,3,4,5,6]` (Car,Bus,Truck,Van,Motorcyclist,Bicyclist), `ped_id_list=[0]` (Pedestrian), `ignore_id_list=[7]` (Other). Vehicles can't CROSS, pedestrians can't LCL/LCR/TL/TR.
+
+### GT Intent Labels in Pkl
+- `create_loki_infos.py` extracts `vehicle_state` (for vehicles) and `intended_actions` (for pedestrians) from `label3d_*.txt` CSV columns 11 and 12
+- Maps strings → integer class IDs via `VEHICLE_STATE_TO_INTENT` / `PED_ACTION_TO_INTENT` dicts and `loki_intent_label()` function
+- Stored as `gt_intent_labels` (int64 array, parallel to `gt_boxes`) in each frame's info dict
+- All valid LOKI agents have labeled intent (0% unknown) — `None` values only appear on filtered-out classes like `Road_Entrance_Exit`
+- Label distribution (train): MOVING 50%, STOP 40%, CROSS 6%, TL 1.8%, TR 1.6%, LCL 0.3%, LCR 0.3%
+
+### Architecture
+- `IntentTransformerDecoder` (3 layers): agent-agent interaction (TransformerDecoderLayer) + agent-BEV deformable attention (`IntentDeformableAttention`) + optional agent-map interaction
+- LOKI uses `map_features=False` → fuser input is 3×D (no map), vs 4×D with map
+- Per-layer classification branches: `Linear(D,D) → LN → ReLU → Linear(D,D) → LN → ReLU → Linear(D,7)`
+- Loss: masked softmax focal loss with per-class weights `[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]`
+
+### Track-to-Intent Mapping
+Hungarian matching in the tracking head produces `track_query_matched_idxes[query_i] = gt_j`. GT intent labels are parallel arrays to GT bboxes: `gt_labels_intent[gt_j]` gives intent for GT object j. The loss function uses this mapping to assign GT intent labels to predicted track queries. SDC (ego) is appended with `match_index=-1` (unmatched).
+
+### Stage 2 Freezing
+`freeze_img_backbone=True, freeze_img_neck=True, freeze_bn=True, freeze_bev_encoder=True` — only the intent head parameters train.
+
+### Files Modified for Intent Head (LOKI branch)
+- `tools/create_loki_infos.py` — Added `VEHICLE_STATE_TO_INTENT`, `PED_ACTION_TO_INTENT`, `loki_intent_label()`, `gt_intent_labels` in pkl output
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `get_ann_info()` reads `gt_intent_labels` from pkl (falls back to -1 if missing); `union2one()` propagates `gt_labels_intent` across temporal queue
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — `forward_train` handles empty `outs_seg` (no map head); added `forward_test` method
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — `IntentTransformerDecoder` supports `map_features=False` (conditional map interaction, dynamic fuser dim)
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — `forward_test` initializes `result_seg=[{}]` when no seg_head, merges intent results
+- `projects/configs/loki/loki_stage2_intent.py` — New config for LOKI intent training
+
+### Config
+- `projects/configs/loki/loki_stage2_intent.py`
+- `load_from`: stage-1 checkpoint path (currently `/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_10.pth`)
+- `data_root`: `/root/loki_data/`
+- Intent head: `num_intent=7, map_features=False, num_layers=3, det_layer_num=1`
+
+### Commands
+```bash
+# Regenerate pkl with intent labels (required once after code change)
+cd /root/UniAD && python tools/create_loki_infos.py \
+    --data-root /root/loki_data --out-dir data/infos
+
+# Stage 2 training (8 GPU)
+cd /root/UniAD && PYTHONPATH="$(pwd)/projects:$(pwd):$PYTHONPATH" \
+python3 -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=28596 \
+    tools/train.py projects/configs/loki/loki_stage2_intent.py \
+    --launcher pytorch --deterministic \
+    --work-dir /mnt/storage/UniAD/work_dirs/stage_2_base
+```
+
+### Data Flow
+1. `create_loki_infos.py` → pkl with `gt_intent_labels` per frame
+2. `get_ann_info()` reads `gt_intent_labels` from pkl, applies validity mask
+3. `LoadAnnotations3D_E2E` with `with_intent_label_3d=True` passes through
+4. Pipeline filters (`ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`, `ObjectCameraVisibleFilter`) all propagate `gt_labels_intent` in sync with `gt_bboxes_3d`
+5. `union2one()` collects temporal queue, stores as `DC(list[tensor])`
+6. `intent_head.loss()` calls `_last_frame_gt_intent_labels()` to extract last frame's labels from queue
+7. Hungarian matching indices map predicted tracks → GT objects → GT intent labels
+8. Masked softmax focal loss (vehicles can't CROSS, peds can't lane change)
 
 ## Key Files
 
@@ -86,7 +159,7 @@ cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_
 ### Data
 - `data/infos/loki_infos_train.pkl`, `data/infos/loki_infos_val.pkl` — Pre-computed info dicts
 - Raw images at `/mnt/storage/loki_data/scenario_XXX/image_XXXX.png`
-- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation, gt_camera_visible`
+- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, gt_intent_labels, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation, gt_camera_visible`
 - `gt_boxes` shape: (N, 9) = [x, y, z, l, w, h, yaw, vx, vy]
 
 ### Training Outputs

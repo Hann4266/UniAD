@@ -139,6 +139,50 @@ def parse_label3d(filepath):
     return annotations
 
 
+# --------------------------------------------------------------------- #
+#  LOKI intent label mapping
+#  Maps vehicle_state / intended_actions strings → intent class IDs
+#  matching IntentHead: 0=STOP 1=MOVING 2=LCL 3=LCR 4=TL 5=TR 6=CROSS
+#  -1 = unknown / unlabeled  (ignored in loss)
+# --------------------------------------------------------------------- #
+VEHICLE_STATE_TO_INTENT = {
+    'Stopped':                      0,  # STOP
+    'Parked':                       0,  # STOP
+    'Other moving':                 1,  # MOVING
+    'Lane change to the left':      2,  # LCL
+    'Cut in to the left':           2,  # LCL
+    'Lane change to the right':     3,  # LCR
+    'Cut in to the right':          3,  # LCR
+    'Turn left':                    4,  # TL
+    'Turn right':                   5,  # TR
+    'None':                        -1,  # unknown
+}
+
+PED_ACTION_TO_INTENT = {
+    'Stopped':              0,  # STOP
+    'Waiting to cross':     0,  # STOP
+    'Moving':               1,  # MOVING
+    'Crossing the road':    6,  # CROSS
+    'None':                -1,  # unknown
+}
+
+# Pedestrian class names in LOKI (before mapping)
+_PED_CLASSES = {'Pedestrian'}
+
+
+def loki_intent_label(label, vehicle_state, intended_actions):
+    """Convert LOKI annotation strings to a single intent class ID.
+
+    For pedestrians, uses the intended_actions column.
+    For vehicles, uses the vehicle_state column.
+    Returns -1 for unknown/unlabeled.
+    """
+    if label in _PED_CLASSES:
+        return PED_ACTION_TO_INTENT.get(intended_actions, -1)
+    else:
+        return VEHICLE_STATE_TO_INTENT.get(vehicle_state, -1)
+
+
 def get_sorted_frame_indices(scenario_dir):
     """Get sorted frame indices from image files in the scenario dir."""
     frame_indices = set()
@@ -305,12 +349,15 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             gt_labels = np.zeros(n_obj, dtype=np.int64)
             gt_inds = np.zeros(n_obj, dtype=np.int64)
             gt_velocity = np.zeros((n_obj, 2), dtype=np.float64)
+            gt_intent_labels = np.full(n_obj, -1, dtype=np.int64)
 
             for i, ann in enumerate(anns):
                 cls_name = ann['mapped_class']
                 gt_names.append(cls_name)
                 gt_labels[i] = LOKI_CLASSES.index(cls_name)
                 gt_inds[i] = global_track_id_map[ann['track_id']]
+                gt_intent_labels[i] = loki_intent_label(
+                    ann['label'], ann['vehicle_state'], ann['intended_actions'])
 
                 # Box: [x, y, z, dx, dy, dz, yaw]
                 gt_boxes[i, 0] = ann['pos'][0]
@@ -333,6 +380,7 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             gt_labels = np.array([], dtype=np.int64)
             gt_inds = np.array([], dtype=np.int64)
             gt_velocity = np.zeros((0, 2), dtype=np.float64)
+            gt_intent_labels = np.array([], dtype=np.int64)
 
         # Timestamp: use frame index / fps as seconds
         timestamp = float(fidx) / 2.0 / fps  # convert frame step to seconds
@@ -368,6 +416,7 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             gt_labels=gt_labels,
             gt_inds=gt_inds,
             gt_velocity=gt_velocity.astype(np.float32),
+            gt_intent_labels=gt_intent_labels,
 
             # Validity (all are valid since we check image exists)
             valid_flag=np.ones(n_obj, dtype=bool),
