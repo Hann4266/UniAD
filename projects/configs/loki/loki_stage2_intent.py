@@ -518,6 +518,6 @@ checkpoint_config = dict(interval=1)
 
 # Load stage-1 perception checkpoint
 # TODO: Update this path to your trained stage-1 checkpoint
-load_from = "/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_10.pth"
+load_from = "/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_6.pth"
 
 find_unused_parameters = True
