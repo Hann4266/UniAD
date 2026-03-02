@@ -707,6 +707,14 @@ class LokiE2EDataset(Custom3DDataset):
         track_detail = self._run_tracking_eval(bbox_results)
         detail.update(track_detail)
 
+        # --- intent evaluation (only if predictions contain intent_label) ---
+        has_intent = any(
+            isinstance(d, dict) and 'intent_label' in d
+            for d in bbox_results[:10])
+        if has_intent:
+            intent_detail = self._run_intent_eval(bbox_results)
+            detail.update(intent_detail)
+
         return detail
 
     # ----- eval helpers ------------------------------------------------ #
@@ -1300,4 +1308,210 @@ class LokiE2EDataset(Custom3DDataset):
                 v = metrics.label_metrics.get(m, {}).get(cls, np.nan)
                 if not np.isnan(v):
                     detail[f'track/{cls}/{m}'] = float(v)
+        return detail
+
+    # ================================================================== #
+    #  Intent Evaluation
+    # ================================================================== #
+
+    INTENT_CLASS_NAMES = (
+        'STOPPED', 'MOVING', 'LCL', 'LCR', 'TL', 'TR', 'CROSSING')
+
+    def _run_intent_eval(self, bbox_results, dist_th=2.0):
+        """Evaluate intent predictions against GT intent labels from pkl.
+
+        For each frame, Hungarian-matches GT and pred tracked boxes (by
+        center distance within dist_th), then compares intent labels on
+        matched TP pairs.  Reports accuracy, per-class precision/recall/F1,
+        and confusion matrix.
+
+        GT intent: from pkl ``gt_intent_labels`` (parallel to ``gt_boxes``).
+        Pred intent: from ``intent_label`` in each frame's result dict
+        (produced by ``forward_test`` → ``result_intent``).
+        Pred-to-GT alignment uses ``track_ids`` and ``gt_inds``.
+
+        Args:
+            bbox_results: list of per-frame result dicts.
+            dist_th: max center distance (m) for a match to count as TP.
+
+        Returns:
+            dict: flat metrics dict with intent/ prefix.
+        """
+        from scipy.optimize import linear_sum_assignment
+
+        print('\n' + '=' * 70)
+        print('  LOKI Intent Evaluation')
+        print('=' * 70)
+
+        num_cls = len(self.INTENT_CLASS_NAMES)
+        cm = np.zeros((num_cls, num_cls), dtype=np.int64)
+
+        for sample_id, det in enumerate(bbox_results):
+            info = self.data_infos[sample_id]
+
+            # --- GT intent labels ---
+            mask = info['valid_flag'] if self.use_valid_flag \
+                else info['num_lidar_pts'] > 0
+            gt_boxes_raw = info['gt_boxes'][mask].copy()
+            gt_names_raw = info['gt_names'][mask]
+            gt_intent_raw = info.get('gt_intent_labels', None)
+            if gt_intent_raw is None:
+                continue
+            gt_intent_raw = gt_intent_raw[mask].copy()
+
+            # 90-deg CCW rotation (same as _build_gt_eval_boxes)
+            if len(gt_boxes_raw) > 0:
+                ox, oy = gt_boxes_raw[:, 0].copy(), gt_boxes_raw[:, 1].copy()
+                gt_boxes_raw[:, 0] = -oy
+                gt_boxes_raw[:, 1] = ox
+
+            # Filter GT: class, range, FOV, camera visibility
+            cam_vis = info.get('gt_camera_visible', None)
+            if cam_vis is not None:
+                cam_vis = cam_vis[mask]
+            gt_centers, gt_intents = [], []
+            for i in range(len(gt_boxes_raw)):
+                det_name = PKL_TO_CONFIG.get(gt_names_raw[i], gt_names_raw[i])
+                if det_name not in self.CLASSES:
+                    det_name = gt_names_raw[i]
+                if det_name not in self.CLASSES:
+                    continue
+                center = gt_boxes_raw[i, :2]
+                if np.linalg.norm(center) > 50.0:
+                    continue
+                if not _in_fov(center):
+                    continue
+                if cam_vis is not None and not cam_vis[i]:
+                    continue
+                y = int(gt_intent_raw[i])
+                if y < 0 or y >= num_cls:
+                    continue
+                gt_centers.append(center)
+                gt_intents.append(y)
+
+            if len(gt_intents) == 0:
+                continue
+
+            # --- Pred intent labels ---
+            if not isinstance(det, dict) or 'intent_label' not in det:
+                continue
+            pred_ilabels = det['intent_label']  # list[N]
+
+            # Get pred box centers (post-tracking, rotated frame)
+            boxes_3d = det.get('boxes_3d', None)
+            if boxes_3d is None or not hasattr(boxes_3d, 'tensor'):
+                continue
+            tensor = boxes_3d.tensor
+            if tensor.is_cuda:
+                tensor = tensor.cpu()
+            pred_centers_all = boxes_3d.gravity_center
+            if pred_centers_all.is_cuda:
+                pred_centers_all = pred_centers_all.cpu()
+            pred_centers_all = pred_centers_all.numpy()[:, :2]
+
+            # Match pred intent_label to tracked boxes via bbox_index
+            bbox_index = det.get('intent_bbox_index', None)
+            pred_centers, pred_intents = [], []
+            if bbox_index is not None:
+                for k, bidx in enumerate(bbox_index):
+                    if k >= len(pred_ilabels):
+                        break
+                    bidx = int(bidx)
+                    if bidx < 0 or bidx >= len(pred_centers_all):
+                        continue
+                    y = int(pred_ilabels[k])
+                    if y < 0 or y >= num_cls:
+                        continue
+                    center = pred_centers_all[bidx]
+                    if not _in_fov(center):
+                        continue
+                    pred_centers.append(center)
+                    pred_intents.append(y)
+            else:
+                # Fallback: intent_label is parallel to boxes_3d
+                for k in range(min(len(pred_ilabels), len(pred_centers_all))):
+                    y = int(pred_ilabels[k])
+                    if y < 0 or y >= num_cls:
+                        continue
+                    center = pred_centers_all[k]
+                    if not _in_fov(center):
+                        continue
+                    pred_centers.append(center)
+                    pred_intents.append(y)
+
+            if len(pred_intents) == 0:
+                continue
+
+            # --- Hungarian matching ---
+            G = len(gt_intents)
+            P = len(pred_intents)
+            gt_xy = np.array(gt_centers, dtype=np.float32)
+            pr_xy = np.array(pred_centers, dtype=np.float32)
+            cost = np.linalg.norm(
+                gt_xy[:, None, :] - pr_xy[None, :, :], axis=-1)
+            gi, pj = linear_sum_assignment(cost)
+            for i, j in zip(gi, pj):
+                if cost[i, j] <= dist_th:
+                    cm[gt_intents[i], pred_intents[j]] += 1
+
+        # --- Compute metrics ---
+        total = int(cm.sum())
+        acc = float(np.trace(cm) / max(total, 1))
+
+        support = cm.sum(axis=1)    # GT count per class
+        predcnt = cm.sum(axis=0)    # pred count per class
+        tp = np.diag(cm)
+
+        eps = 1e-12
+        prec = tp / np.maximum(predcnt, eps)
+        rec = tp / np.maximum(support, eps)
+        f1 = 2 * prec * rec / np.maximum(prec + rec, eps)
+
+        valid = support > 0
+        macro_f1 = float(np.mean(f1[valid])) if valid.any() else 0.0
+        macro_rec = float(np.mean(rec[valid])) if valid.any() else 0.0
+        macro_prec = float(np.mean(prec[valid])) if valid.any() else 0.0
+
+        # --- Print ---
+        tab = PrettyTable()
+        tab.field_names = ['Intent Class', 'Precision', 'Recall', 'F1',
+                           'Support', 'TP', 'Predicted']
+        for i, name in enumerate(self.INTENT_CLASS_NAMES):
+            tab.add_row([
+                name,
+                f'{prec[i]:.3f}' if (support[i] > 0 or predcnt[i] > 0) else 'N/A',
+                f'{rec[i]:.3f}' if support[i] > 0 else 'N/A',
+                f'{f1[i]:.3f}' if support[i] > 0 else 'N/A',
+                int(support[i]), int(tp[i]), int(predcnt[i]),
+            ])
+        print(f'\nMatched TP pairs: {total}')
+        print(f'Accuracy: {acc:.4f}')
+        print(f'Macro Precision: {macro_prec:.4f}')
+        print(f'Macro Recall: {macro_rec:.4f}')
+        print(f'Macro F1: {macro_f1:.4f}')
+        print('\nPer-class Intent Metrics:')
+        print(tab)
+
+        # Confusion matrix
+        print('\nConfusion Matrix (rows=GT, cols=Pred):')
+        header = ''.join(f'{n:>8s}' for n in self.INTENT_CLASS_NAMES)
+        print(f'{"":>10s}{header}')
+        for i, name in enumerate(self.INTENT_CLASS_NAMES):
+            row = ''.join(f'{int(cm[i, j]):>8d}' for j in range(num_cls))
+            print(f'{name:>10s}{row}')
+        print('=' * 70 + '\n')
+
+        # --- Build flat dict ---
+        detail = {
+            'intent/acc': acc,
+            'intent/macro_f1': macro_f1,
+            'intent/macro_recall': macro_rec,
+            'intent/macro_precision': macro_prec,
+            'intent/matched_tp': total,
+        }
+        for i, name in enumerate(self.INTENT_CLASS_NAMES):
+            if support[i] > 0:
+                detail[f'intent/{name}/f1'] = float(f1[i])
+                detail[f'intent/{name}/recall'] = float(rec[i])
+                detail[f'intent/{name}/precision'] = float(prec[i])
         return detail

@@ -147,7 +147,7 @@ python3 -m torch.distributed.launch \
 ```
 
 ### Config: projects/configs/loki/loki_stage2_intent.py
-- `load_from`: `/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_10.pth`
+- `load_from`: `/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_6.pth`
 - `data_root`: `/root/loki_data/`
 - Frozen: backbone, neck, BN, BEV encoder (only intent head trains)
 - `num_intent=7`, `map_features=False`, `inter_features=True` (default), 3 decoder layers
@@ -162,10 +162,12 @@ python3 -m torch.distributed.launch \
 
 ### Files changed for intent (loki branch, minimal diff from main)
 - `tools/create_loki_infos.py` — gt_intent_labels in pkl
-- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — get_ann_info reads from pkl, union2one propagates
-- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — **2 changes only**: forward_test bug fix + LOKI intent ID ordering in `_build_allowed_mask_and_ignore`
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — get_ann_info reads from pkl, union2one propagates, `_run_intent_eval()` for intent evaluation
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — forward_test bug fix + LOKI intent ID ordering in `_build_allowed_mask_and_ignore` + motion_encoder (synced from main)
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/base_intent_head.py` — **1 line**: `self.ped_loss_weight` extraction in `_build_loss()` (bug fix, main references it but never sets it)
 - `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — **no changes** (main already handles map_features=False)
 - `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — **1 line**: `result_seg=[{}]` for no seg_head
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_track.py` — **1 line**: gate SDC keys for intent_head too (not just motion_head)
 - `projects/configs/loki/loki_stage2_intent.py` — new config
 
 ### Regenerate pkl (required once)

@@ -85,6 +85,7 @@ LOKI class IDs for intent masking: `vehicle_id_list=[1,2,3,4,5,6]` (Car,Bus,Truc
 - `IntentTransformerDecoder` (3 layers): agent-agent interaction (TransformerDecoderLayer) + agent-BEV deformable attention (`IntentDeformableAttention`) + optional agent-map interaction
 - LOKI uses `map_features=False, inter_features=True` (default) → fuser input is 3×D (no map), vs 4×D with map. The main branch `IntentTransformerDecoder` already supports this natively via conditional branches — no code changes needed in modules.py.
 - `obj_type_embed`: Embedding(3, D) adds learned type embeddings (0=ped, 1=veh, 2=ignore) to track queries before the decoder — same as main branch.
+- `motion_encoder`: `Linear(4→D/2) → ReLU → Linear(D/2→D)` encodes per-agent motion features `[vx, vy, speed, heading]` into a D-dim embedding. Added to track query alongside type embedding: `intent_query = track_query + type_emb + motion_emb`.
 - Per-layer classification branches: `Linear(D,D) → LN → ReLU → Linear(D,D) → LN → ReLU → Linear(D,7)`
 - Loss: masked softmax focal loss with sqrt-inverse-frequency class weights `[1.18, 1.0, 15.49, 12.77, 5.38, 6.32, 2.24]` (computed from LOKI train distribution). `ped_loss_weight=1.0` (LOKI has proportionally more pedestrians than nuScenes).
 
@@ -98,10 +99,12 @@ Hungarian matching in the tracking head produces `track_query_matched_idxes[quer
 Principle: **minimal diff from main branch**. The intent head architecture and loss are identical to main; only dataset-specific adaptations are changed.
 
 - `tools/create_loki_infos.py` — Added `VEHICLE_STATE_TO_INTENT`, `PED_ACTION_TO_INTENT`, `loki_intent_label()`, `gt_intent_labels` in pkl output
-- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `get_ann_info()` reads `gt_intent_labels` from pkl (falls back to -1 if missing); `union2one()` propagates `gt_labels_intent` across temporal queue
-- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — **2 minimal changes from main**: (1) `forward_test` bug fix (`intent_scores` → `logits_last` variable name, fix `[bi]` indexing on already-sliced tensors), (2) LOKI intent ID constants in `_build_allowed_mask_and_ignore` (LOKI: 0=STOP,1=MOVING,2=LCL,3=LCR,4=TL,5=TR,6=CROSS vs main: 2=CROSS,3=TR,4=TL,5=LCR,6=LCL)
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `get_ann_info()` reads `gt_intent_labels` from pkl (falls back to -1 if missing); `union2one()` propagates `gt_labels_intent` across temporal queue; `_run_intent_eval()` evaluates intent predictions (Hungarian-matched TP pairs, confusion matrix, per-class P/R/F1, macro F1)
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — Changes from main: (1) `forward_test` bug fix (`intent_scores` → `logits_last` variable name, fix `[bi]` indexing on already-sliced tensors, `allowed.to(device)`), (2) LOKI intent ID constants in `_build_allowed_mask_and_ignore` (LOKI: 0=STOP,1=MOVING,2=LCL,3=LCR,4=TL,5=TR,6=CROSS vs main: 2=CROSS,3=TR,4=TL,5=LCR,6=LCL). Motion encoder and type embedding are synced with main.
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/base_intent_head.py` — **1 line added**: `self.ped_loss_weight = float(loss_cls.get("ped_loss_weight", 1.0))` in `_build_loss()` (main references `self.ped_loss_weight` in `_loss_single_layer` but never sets it)
 - `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — **No changes from main**. Main already handles `map_features=False` via `inter_features` conditional branches.
 - `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — **1 line added**: `result_seg=[{}]` before `if self.with_seg_head` in `forward_test` (prevents `NameError` when no seg_head but intent_head is present)
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_track.py` — **1 line changed**: `if self.with_motion_head:` → `if self.with_motion_head or self.with_intent_head:` in `simple_test_track` to include SDC keys needed by intent head's `forward_test`
 - `projects/configs/loki/loki_stage2_intent.py` — New config for LOKI intent training
 
 ### Config
@@ -134,6 +137,14 @@ python3 -m torch.distributed.launch \
 6. `intent_head.loss()` calls `_last_frame_gt_intent_labels()` to extract last frame's labels from queue
 7. Hungarian matching indices map predicted tracks → GT objects → GT intent labels
 8. Masked softmax focal loss (vehicles can't CROSS, peds can't lane change)
+
+### Intent Evaluation
+`_run_intent_eval()` in `loki_e2e_dataset.py` evaluates intent predictions against GT from pkl:
+- **Matching**: Per-frame Hungarian matching of GT and pred tracked boxes by center distance (threshold 2.0m), with FOV + range + camera visibility filtering on GT
+- **Pred intent source**: `intent_label` and `intent_bbox_index` in each frame's result dict (from `forward_test` → `result_intent`)
+- **GT intent source**: `gt_intent_labels` directly from pkl (parallel to `gt_boxes`), no external JSON needed (unlike nuScenes main which uses `all_scenes_compact.json`)
+- **Metrics**: accuracy, macro precision/recall/F1, per-class P/R/F1, confusion matrix
+- **Auto-detection**: only runs if results contain `intent_label` key (skipped for perception-only eval)
 
 ## Key Files
 
