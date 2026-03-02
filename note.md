@@ -146,6 +146,18 @@ python3 -m torch.distributed.launch \
     --work-dir /mnt/storage/UniAD/work_dirs/stage_2_base
 ```
 
+### Eval command (8 GPU) — detection + tracking + intent
+```bash
+cd /root/UniAD && PYTHONPATH="$(pwd)/projects:$(pwd):$PYTHONPATH" \
+python3 -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=28596 \
+    tools/test.py projects/configs/loki/loki_stage2_intent.py \
+    /mnt/storage/UniAD/work_dirs/stage_2_base/epoch_20.pth \
+    --launcher pytorch --eval bbox \
+    --out /mnt/storage/UniAD/work_dirs/stage_2_base/results.pkl
+```
+Intent eval runs automatically if results contain `intent_label` (produced by intent head's `forward_test`). Reports accuracy, macro F1, per-class P/R/F1, confusion matrix.
+
 ### Config: projects/configs/loki/loki_stage2_intent.py
 - `load_from`: `/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_6.pth`
 - `data_root`: `/root/loki_data/`

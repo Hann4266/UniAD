@@ -126,6 +126,15 @@ python3 -m torch.distributed.launch \
     tools/train.py projects/configs/loki/loki_stage2_intent.py \
     --launcher pytorch --deterministic \
     --work-dir /mnt/storage/UniAD/work_dirs/stage_2_base
+
+# Stage 2 eval (8 GPU) — runs detection + tracking + intent eval
+cd /root/UniAD && PYTHONPATH="$(pwd)/projects:$(pwd):$PYTHONPATH" \
+python3 -m torch.distributed.launch \
+    --nproc_per_node=8 --master_port=28596 \
+    tools/test.py projects/configs/loki/loki_stage2_intent.py \
+    /mnt/storage/UniAD/work_dirs/stage_2_base/epoch_20.pth \
+    --launcher pytorch --eval bbox \
+    --out /mnt/storage/UniAD/work_dirs/stage_2_base/results.pkl
 ```
 
 ### Data Flow
