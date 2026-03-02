@@ -27,6 +27,7 @@ class BaseIntentHead(nn.Module):
         self.focal_gamma = float(loss_cls.get("gamma", 2.0))
         self.focal_alpha = float(loss_cls.get("alpha", 0.25))
         self.loss_weight = float(loss_cls.get("loss_weight", 1.0))
+        self.ped_loss_weight = float(loss_cls.get("ped_loss_weight", 1.0))
         cw = loss_cls.get("class_weight", None)
         if cw is not None:
             self.register_buffer(
