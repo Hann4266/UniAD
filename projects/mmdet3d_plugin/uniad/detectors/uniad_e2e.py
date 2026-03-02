@@ -224,11 +224,11 @@ class UniAD(UniADTrack):
                 outs_motion['traj_query'] = torch.zeros((3, 1, 1, 6, 256)).to(bev_embed)
                 outs_motion['all_matched_idxes'] = [[-1]]
             losses_occ = self.occ_head.forward_train(
-                            bev_embed,
-                            outs_motion,
+                            bev_embed, 
+                            outs_motion, 
                             gt_inds_list=gt_inds,
-                            gt_segmentation=gt_segmentation,  
-                            gt_instance=gt_instance, 
+                            gt_segmentation=gt_segmentation,
+                            gt_instance=gt_instance,
                             gt_img_is_valid=gt_occ_img_is_valid,
                         )
             losses_occ = self.loss_weighted_and_prefixed(losses_occ, prefix='occ')
@@ -354,12 +354,7 @@ class UniAD(UniADTrack):
         result_track[0] = pop_elem_in_result(result_track[0], pop_track_list)
 
         if self.with_seg_head:
-            result_seg[0] = pop_elem_in_result(result_seg[0], pop_list=['args_tuple'])
-            # Move map prediction tensors to CPU to avoid OOM accumulation
-            if 'pts_bbox' in result_seg[0]:
-                for k, v in result_seg[0]['pts_bbox'].items():
-                    if hasattr(v, 'cpu'):
-                        result_seg[0]['pts_bbox'][k] = v.cpu()
+            result_seg[0] = pop_elem_in_result(result_seg[0], pop_list=['pts_bbox', 'args_tuple'])
         if self.with_intent_head:
             result_intent[0] = pop_elem_in_result(result_intent[0])
         if self.with_motion_head:

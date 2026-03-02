@@ -83,9 +83,10 @@ LOKI class IDs for intent masking: `vehicle_id_list=[1,2,3,4,5,6]` (Car,Bus,Truc
 
 ### Architecture
 - `IntentTransformerDecoder` (3 layers): agent-agent interaction (TransformerDecoderLayer) + agent-BEV deformable attention (`IntentDeformableAttention`) + optional agent-map interaction
-- LOKI uses `map_features=False` → fuser input is 3×D (no map), vs 4×D with map
+- LOKI uses `map_features=False, inter_features=True` (default) → fuser input is 3×D (no map), vs 4×D with map. The main branch `IntentTransformerDecoder` already supports this natively via conditional branches — no code changes needed in modules.py.
+- `obj_type_embed`: Embedding(3, D) adds learned type embeddings (0=ped, 1=veh, 2=ignore) to track queries before the decoder — same as main branch.
 - Per-layer classification branches: `Linear(D,D) → LN → ReLU → Linear(D,D) → LN → ReLU → Linear(D,7)`
-- Loss: masked softmax focal loss with per-class weights `[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]`
+- Loss: masked softmax focal loss with sqrt-inverse-frequency class weights `[1.18, 1.0, 15.49, 12.77, 5.38, 6.32, 2.24]` (computed from LOKI train distribution). `ped_loss_weight=1.0` (LOKI has proportionally more pedestrians than nuScenes).
 
 ### Track-to-Intent Mapping
 Hungarian matching in the tracking head produces `track_query_matched_idxes[query_i] = gt_j`. GT intent labels are parallel arrays to GT bboxes: `gt_labels_intent[gt_j]` gives intent for GT object j. The loss function uses this mapping to assign GT intent labels to predicted track queries. SDC (ego) is appended with `match_index=-1` (unmatched).
@@ -94,11 +95,13 @@ Hungarian matching in the tracking head produces `track_query_matched_idxes[quer
 `freeze_img_backbone=True, freeze_img_neck=True, freeze_bn=True, freeze_bev_encoder=True` — only the intent head parameters train.
 
 ### Files Modified for Intent Head (LOKI branch)
+Principle: **minimal diff from main branch**. The intent head architecture and loss are identical to main; only dataset-specific adaptations are changed.
+
 - `tools/create_loki_infos.py` — Added `VEHICLE_STATE_TO_INTENT`, `PED_ACTION_TO_INTENT`, `loki_intent_label()`, `gt_intent_labels` in pkl output
 - `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `get_ann_info()` reads `gt_intent_labels` from pkl (falls back to -1 if missing); `union2one()` propagates `gt_labels_intent` across temporal queue
-- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — `forward_train` handles empty `outs_seg` (no map head); added `forward_test` method
-- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — `IntentTransformerDecoder` supports `map_features=False` (conditional map interaction, dynamic fuser dim)
-- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — `forward_test` initializes `result_seg=[{}]` when no seg_head, merges intent results
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — **2 minimal changes from main**: (1) `forward_test` bug fix (`intent_scores` → `logits_last` variable name, fix `[bi]` indexing on already-sliced tensors), (2) LOKI intent ID constants in `_build_allowed_mask_and_ignore` (LOKI: 0=STOP,1=MOVING,2=LCL,3=LCR,4=TL,5=TR,6=CROSS vs main: 2=CROSS,3=TR,4=TL,5=LCR,6=LCL)
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — **No changes from main**. Main already handles `map_features=False` via `inter_features` conditional branches.
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — **1 line added**: `result_seg=[{}]` before `if self.with_seg_head` in `forward_test` (prevents `NameError` when no seg_head but intent_head is present)
 - `projects/configs/loki/loki_stage2_intent.py` — New config for LOKI intent training
 
 ### Config

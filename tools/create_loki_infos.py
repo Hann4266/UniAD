@@ -160,7 +160,7 @@ VEHICLE_STATE_TO_INTENT = {
 
 PED_ACTION_TO_INTENT = {
     'Stopped':              0,  # STOP
-    'Waiting to cross':     0,  # STOP
+    'Waiting to cross':     6,  # CROSS
     'Moving':               1,  # MOVING
     'Crossing the road':    6,  # CROSS
     'None':                -1,  # unknown

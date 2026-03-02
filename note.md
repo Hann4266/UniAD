@@ -150,8 +150,9 @@ python3 -m torch.distributed.launch \
 - `load_from`: `/mnt/storage/UniAD/work_dirs/base_loki_perception/epoch_10.pth`
 - `data_root`: `/root/loki_data/`
 - Frozen: backbone, neck, BN, BEV encoder (only intent head trains)
-- `num_intent=7`, `map_features=False`, 3 decoder layers
-- Loss: masked softmax focal loss, class_weight=[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+- `num_intent=7`, `map_features=False`, `inter_features=True` (default), 3 decoder layers
+- Loss: masked softmax focal loss, class_weight=[1.18, 1.0, 15.49, 12.77, 5.38, 6.32, 2.24] (sqrt-inverse-freq from LOKI distribution)
+- `ped_loss_weight=1.0` (LOKI has more pedestrians than nuScenes)
 
 ### Intent label mapping (in create_loki_infos.py)
 - Vehicles use `vehicle_state` column: Stopped/Parked→0, Other moving→1, LCL/Cut-in-left→2, LCR/Cut-in-right→3, TL→4, TR→5
@@ -159,12 +160,12 @@ python3 -m torch.distributed.launch \
 - All valid agents have labels (0% unknown)
 - Train distribution: MOVING 50%, STOP 40%, CROSS 6%, TL 1.8%, TR 1.6%, LCL 0.3%, LCR 0.3%
 
-### Files changed for intent (loki branch)
+### Files changed for intent (loki branch, minimal diff from main)
 - `tools/create_loki_infos.py` — gt_intent_labels in pkl
 - `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — get_ann_info reads from pkl, union2one propagates
-- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — forward_train/forward_test for no-map
-- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — map_features=False support
-- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — forward_test intent without seg_head
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head.py` — **2 changes only**: forward_test bug fix + LOKI intent ID ordering in `_build_allowed_mask_and_ignore`
+- `projects/mmdet3d_plugin/uniad/dense_heads/intent_head_plugin/modules.py` — **no changes** (main already handles map_features=False)
+- `projects/mmdet3d_plugin/uniad/detectors/uniad_e2e.py` — **1 line**: `result_seg=[{}]` for no seg_head
 - `projects/configs/loki/loki_stage2_intent.py` — new config
 
 ### Regenerate pkl (required once)

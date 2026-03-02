@@ -46,6 +46,7 @@ class IntentHead(BaseIntentHead):
         self.num_intent = num_intent
         self.bev_h = bev_h
         self.bev_w = bev_w
+
         self.num_cls_fcs = num_cls_fcs - 1
         self.embed_dims = embed_dims        
         self.pc_range = pc_range
@@ -58,6 +59,19 @@ class IntentHead(BaseIntentHead):
         self._build_loss(loss_cls)
         self._build_layers(transformerlayers, det_layer_num)
         self._init_layers()
+        self.obj_type_embed = nn.Embedding(3, embed_dims)
+
+    def _get_obj_type_ids(self, labels):
+        """
+        labels: (N,) detection class ids
+        returns: (N,) type ids  0=ped, 1=veh, 2=ignore
+        """
+        type_ids = torch.full_like(labels, 2)  # default: ignore
+        for cid in self.vehicle_id_list:
+            type_ids[labels == cid] = 1
+        for cid in self.ped_id_list:
+            type_ids[labels == cid] = 0
+        return type_ids
 
     def forward_train(self, 
                 bev_embed,
@@ -87,12 +101,11 @@ class IntentHead(BaseIntentHead):
         track_boxes[0][1] = torch.cat([track_boxes[0][1], sdc_track_boxes[0][1]], dim=0)
         track_boxes[0][2] = torch.cat([track_boxes[0][2], sdc_track_boxes[0][2]], dim=0)
         track_boxes[0][3] = torch.cat([track_boxes[0][3], sdc_track_boxes[0][3]], dim=0)
-        
-        if outs_seg and 'args_tuple' in outs_seg:
+        if outs_seg != {}:
             memory, memory_mask, memory_pos, lane_query, _, lane_query_pos, hw_lvl = outs_seg['args_tuple']
+            outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
         else:
-            lane_query, lane_query_pos = None, None
-        outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
+            outs_intent = self(bev_embed, track_query, None, None, track_boxes)
         losses = self.loss(
             preds_dicts_intent=outs_intent,
             matched_idxes=all_matched_idxes,
@@ -102,12 +115,11 @@ class IntentHead(BaseIntentHead):
 
         ret_dict = dict(losses=losses, outs_intent=outs_intent, track_boxes=track_boxes)
         return ret_dict
-
     def forward_test(self, bev_embed, outs_track={}, outs_seg={}):
         """Test function"""
         track_query = outs_track['track_query_embeddings'][None, None, ...]
         track_boxes = outs_track['track_bbox_results']
-
+        
         track_query = torch.cat([track_query, outs_track['sdc_embedding'][None, None, None, :]], dim=2)
         sdc_track_boxes = outs_track['sdc_track_bbox_results']
 
@@ -117,34 +129,37 @@ class IntentHead(BaseIntentHead):
         track_boxes[0][3] = torch.cat([track_boxes[0][3], sdc_track_boxes[0][3]], dim=0)
 
         bboxes, scores, labels, bbox_index, mask = track_boxes[0]
-        labels[-1] = 0  # SDC label
 
-        if outs_seg and 'args_tuple' in outs_seg:
+        labels[-1] = 0
+
+        if outs_seg != {}:
             memory, memory_mask, memory_pos, lane_query, _, lane_query_pos, hw_lvl = outs_seg['args_tuple']
+            outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
         else:
-            lane_query, lane_query_pos = None, None
-        outs_intent = self(bev_embed, track_query, lane_query, lane_query_pos, track_boxes)
+            outs_intent = self(bev_embed, track_query, None, None, track_boxes)
+        
 
         logits = outs_intent["all_intent_logits"]
-        logits_last = logits[-1]  # (B, A, C)
+        logits_last = logits[-1] 
 
-        allowed, _ = self._build_allowed_mask_and_ignore(labels)  # (A, C)
-
+        allowed, _ = self._build_allowed_mask_and_ignore(labels)  # (N, C)
         neg_inf = torch.finfo(logits_last.dtype).min
+
         B = logits_last.shape[0]
         result_intent = []
         for bi in range(B):
-            masked_logits = logits_last[bi].masked_fill(~allowed, neg_inf)  # (A, C)
+            masked_logits = logits_last[bi].masked_fill(~allowed, neg_inf)  # (N, C)
             intent_scores = F.softmax(masked_logits, dim=-1)
             intent_label = torch.argmax(intent_scores, dim=-1)
             result_intent.append(dict(
-                intent_scores=intent_scores.detach().cpu().tolist(),
-                intent_label=intent_label.detach().cpu().tolist(),
-                intent_bbox_index=bbox_index.detach().cpu().tolist(),
+                intent_scores=intent_scores.detach().cpu().tolist(),  # [N,C]
+                intent_label=intent_label.detach().cpu().tolist(),    # [N]
+                intent_bbox_index=bbox_index.detach().cpu().tolist(),     # [N]
             ))
 
-        # 这里的outs_intent包含了intermediate states，可以直接返回给外面做后续分析/可视化等，不需要再单独计算 （也可以不要？ main里返回none）
-        return result_intent, outs_intent
+        
+        return result_intent, None
+
 
     @auto_fp16(apply_to=('bev_embed', 'track_query', 'lane_query', 'lane_query_pos', 'lane_query_embed', 'prev_bev'))
     def forward(self, 
@@ -176,7 +191,14 @@ class IntentHead(BaseIntentHead):
 
         # extract the last frame of the track query
         track_query = track_query[:, -1]
-        
+        B, A, D = track_query.shape
+        labels = track_bbox_results[0][2]
+        obj_type_ids = self._get_obj_type_ids(labels)  
+        obj_type_ids = obj_type_ids.to(device)        
+        obj_type_ids = obj_type_ids.unsqueeze(0).expand(B, -1)  # (B, A)
+        type_emb = self.obj_type_embed(obj_type_ids)            # (B, A, D)
+        intent_query = track_query + type_emb                    # (B, A, D)
+
         # encode the center point of the track query
         reference_points_track = self._extract_tracking_centers(
             track_bbox_results, self.pc_range).to(device)
@@ -187,13 +209,13 @@ class IntentHead(BaseIntentHead):
         all_logits = []
 
         inter_states = self.intentformer(
-            track_query,  # B, A_track, D
+            intent_query,  # B, A_track, D
             lane_query,  # B, M, D
             track_query_pos=track_query_pos,
             lane_query_pos=lane_query_pos,
             track_bbox_results=track_bbox_results,
             bev_embed=bev_embed,
-            reference_points_track=reference_points_track
+            reference_points_track=reference_points_track,
             )
 
         for lid in range(inter_states.shape[0]):
@@ -247,26 +269,19 @@ class IntentHead(BaseIntentHead):
             loss_dict[f"d{d}.loss_intent"] = li * self.loss_weight
         return loss_dict
     def _loss_single_layer(self, logits, matched_idxes, gt_intent_labels, gt_det_labels_last):
-        """
-        logits: (B, A, C)
-        matched_idxes: (B, A)   -1 means unmatched
-        gt_intent_labels: list[tensor(num_gt)]  each label in [0, C-1] or -1(ignore)
-        gt_det_labels_last: list[tensor(num_gt)] detection class id for masking VEH/PED/IGN
-        """
         B, A, C = logits.shape
         device = logits.device
 
-        xs, ys, allowed_all = [], [], []
+        xs, ys, allowed_all, is_ped_all = [], [], [], []
 
         for b in range(B):
-            midx = matched_idxes[b]  # (A,)
+            midx = matched_idxes[b]
             valid_q = (midx >= 0)
             if valid_q.sum() == 0:
                 continue
 
-            gt_idx = midx[valid_q].long()  # (Nq_valid,)
+            gt_idx = midx[valid_q].long()
 
-            # 防御性检查：避免 index 越界
             num_gt_int = gt_intent_labels[b].numel()
             num_gt_det = gt_det_labels_last[b].numel()
             in_range = (gt_idx >= 0) & (gt_idx < num_gt_int) & (gt_idx < num_gt_det)
@@ -274,48 +289,55 @@ class IntentHead(BaseIntentHead):
                 continue
 
             gt_idx = gt_idx[in_range]
+            x_b   = logits[b, valid_q, :][in_range]
+            y_b   = gt_intent_labels[b][gt_idx].to(device).long()
+            det_b = gt_det_labels_last[b][gt_idx].to(device).long()
 
-            # 对应 query logits（先按 valid_q 取，再按 in_range 取）
-            x_b = logits[b, valid_q, :][in_range]                       # (N, C)
-            y_b = gt_intent_labels[b][gt_idx].to(device).long()         # (N,)
-            det_b = gt_det_labels_last[b][gt_idx].to(device).long()     # (N,)
-
-            # ignore gt_intent = -1
             keep = (y_b >= 0) & (y_b < C)
-
-            # type-based allowed mask + ignore mask
-            allowed_b, ign_b = self._build_allowed_mask_and_ignore(det_b)  # (N,C), (N,)
+            allowed_b, ign_b = self._build_allowed_mask_and_ignore(det_b)
             keep = keep & (~ign_b)
-
-            # 如果 GT intent 对于该 object type 不合法，也直接丢掉（防止脏标注）
             row_idx = torch.arange(y_b.numel(), device=device)
             keep = keep & allowed_b[row_idx, y_b.clamp(min=0, max=C - 1)]
 
             if keep.sum() == 0:
                 continue
-            xs.append(x_b[keep])               # (N_keep, C)
-            ys.append(y_b[keep])               # (N_keep,)
-            allowed_all.append(allowed_b[keep])# (N_keep, C)
 
-        # no valid sample -> zero loss
+            #  ped 
+            is_ped_b = torch.zeros(det_b.shape, dtype=torch.bool, device=device)
+            for cid in self.ped_id_list:
+                is_ped_b |= (det_b == cid)
+
+            xs.append(x_b[keep])
+            ys.append(y_b[keep])
+            allowed_all.append(allowed_b[keep])
+            is_ped_all.append(is_ped_b[keep])
+
         if len(xs) == 0:
             return logits.sum() * 0.0
 
-        x = torch.cat(xs, dim=0)
-        y = torch.cat(ys, dim=0)
+        x       = torch.cat(xs, dim=0)
+        y       = torch.cat(ys, dim=0)
         allowed = torch.cat(allowed_all, dim=0)
+        is_ped  = torch.cat(is_ped_all, dim=0)   # (N_keep,) bool
 
-        # 用 per-class weight（如果配置了 class_weight），否则用 focal_alpha 标量
-        alpha = self.intent_class_weight if getattr(self, "intent_class_weight", None) is not None else self.focal_alpha
+        alpha = self.intent_class_weight if self.intent_class_weight is not None else self.focal_alpha
 
-        return self.masked_softmax_focal_loss(
+        # per-sample loss
+        loss_per = self.masked_softmax_focal_loss(
             logits=x,
             target=y,
-            allowed_mask=allowed,   # vehicle/ped class-specific valid intent masking
+            allowed_mask=allowed,
             gamma=self.focal_gamma,
             alpha=alpha,
-            reduction="mean"
+            reduction="none"  
         )
+
+        # ped/veh 分组 mean，再加权合并
+        is_veh = ~is_ped
+        veh_loss = loss_per[is_veh].mean() if is_veh.any() else loss_per.sum() * 0.0
+        ped_loss = loss_per[is_ped].mean() if is_ped.any() else loss_per.sum() * 0.0
+
+        return veh_loss + ped_loss * self.ped_loss_weight
     def _last_frame_gt_intent_labels(self, gt_intent_labels):
         """
         Normalize gt_intent_labels to list[Tensor(num_gt)] for the LAST frame.
@@ -442,7 +464,7 @@ class IntentHead(BaseIntentHead):
         N = det_cls.numel()
         C = self.num_intent
 
-        # intent ids
+        # intent ids (LOKI ordering)
         INT_STOP   = 0
         INT_MOVING = 1
         INT_LCL    = 2

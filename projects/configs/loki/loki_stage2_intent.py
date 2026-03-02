@@ -259,7 +259,8 @@ model = dict(
             gamma=2.0,
             alpha=0.25,
             loss_weight=5.0,
-            class_weight=[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+            ped_loss_weight=1.0,
+            class_weight=[1.18, 1.0, 15.49, 12.77, 5.38, 6.32, 2.24]
         ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',
@@ -309,7 +310,7 @@ model = dict(
 # --------------------------------------------------------------------- #
 dataset_type = "LokiE2EDataset"
 data_root = "/root/loki_data/"
-info_root = "data/infos/"
+info_root = "/root/UniAD/data/infos/"
 file_client_args = dict(backend="disk")
 ann_file_train = info_root + "loki_infos_train.pkl"
 ann_file_val = info_root + "loki_infos_val.pkl"
