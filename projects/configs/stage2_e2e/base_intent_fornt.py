@@ -350,7 +350,9 @@ model = dict(
             alpha=0.25,
             loss_weight=5.0,
             ped_loss_weight=2.0,
-            class_weight= [1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+            # class_weight= [1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+            class_weight=[1.0, 1.23, 2.60, 5.01, 4.40, 8.13, 9.01] #filter 
+
         ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',   

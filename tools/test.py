@@ -197,47 +197,52 @@ def main():
         nonshuffler_sampler=cfg.data.nonshuffler_sampler,
     )
 
-    # # build the model and load checkpoint
-    # cfg.model.train_cfg = None
-    # model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
-    # fp16_cfg = cfg.get('fp16', None)
-    # if fp16_cfg is not None:
-    #     wrap_fp16_model(model)
-    # checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
-    # if args.fuse_conv_bn:
-    #     model = fuse_conv_bn(model)
-    # # old versions did not save class info in checkpoints, this walkaround is
-    # # for backward compatibility
-    # if 'CLASSES' in checkpoint.get('meta', {}):
-    #     model.CLASSES = checkpoint['meta']['CLASSES']
-    # else:
-    #     model.CLASSES = dataset.CLASSES
-    # # palette for visualization in segmentation tasks
-    # if 'PALETTE' in checkpoint.get('meta', {}):
-    #     model.PALETTE = checkpoint['meta']['PALETTE']
-    # elif hasattr(dataset, 'PALETTE'):
-    #     # segmentation dataset has `PALETTE` attribute
-    #     model.PALETTE = dataset.PALETTE
+    # build the model and load checkpoint
+    cfg.model.train_cfg = None
+    model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
+    fp16_cfg = cfg.get('fp16', None)
+    if fp16_cfg is not None:
+        wrap_fp16_model(model)
+    checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
+    if args.fuse_conv_bn:
+        model = fuse_conv_bn(model)
+    # old versions did not save class info in checkpoints, this walkaround is
+    # for backward compatibility
+    if 'CLASSES' in checkpoint.get('meta', {}):
+        model.CLASSES = checkpoint['meta']['CLASSES']
+    else:
+        model.CLASSES = dataset.CLASSES
+    # palette for visualization in segmentation tasks
+    if 'PALETTE' in checkpoint.get('meta', {}):
+        model.PALETTE = checkpoint['meta']['PALETTE']
+    elif hasattr(dataset, 'PALETTE'):
+        # segmentation dataset has `PALETTE` attribute
+        model.PALETTE = dataset.PALETTE
 
-    # if not distributed:
-    #     assert False
-    #     # model = MMDataParallel(model, device_ids=[0])
-    #     # outputs = single_gpu_test(model, data_loader, args.show, args.show_dir)
-    # else:
-    #     model = MMDistributedDataParallel(
-    #         model.cuda(),
-    #         device_ids=[torch.cuda.current_device()],
-    #         broadcast_buffers=False)
-    #     outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,
-    #                                     args.gpu_collect)
+    if not distributed:
+        assert False
+        # model = MMDataParallel(model, device_ids=[0])
+        # outputs = single_gpu_test(model, data_loader, args.show, args.show_dir)
+    else:
+        model = MMDistributedDataParallel(
+            model.cuda(),
+            device_ids=[torch.cuda.current_device()],
+            broadcast_buffers=False)
+        outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,
+                                        args.gpu_collect)
 
     rank, _ = get_dist_info()
     if rank == 0:
         if args.out:
-            print(f'\nwriting results to {args.out}')
+            ckpt_path = args.checkpoint
+            # get directory of checkpoint
+            base_dir = os.path.dirname(ckpt_path)
+            # join with args.out
+            out_dir = os.path.join(base_dir, args.out)
+            print(f'\nwriting results to {out_dir}')
             #assert False
-            # mmcv.dump(outputs, args.out)
-            outputs = mmcv.load(args.out)
+            mmcv.dump(outputs, out_dir)
+            # outputs = mmcv.load(out_dir)
         kwargs = {} if args.eval_options is None else args.eval_options
         kwargs['jsonfile_prefix'] = osp.join('test', args.config.split(
             '/')[-1].split('.')[-2], time.ctime().replace(' ', '_').replace(':', '_'))

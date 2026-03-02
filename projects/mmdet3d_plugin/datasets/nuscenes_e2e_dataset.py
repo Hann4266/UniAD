@@ -1048,6 +1048,8 @@ class NuScenesE2EDataset(NuScenesDataset):
             intent_token_map = None
             if 'intent_label' in det:  
                 ilabs = det['intent_label']                 # list[N]
+                if isinstance(ilabs, int):
+                    ilabs = [ilabs]
                 iscores = det.get('intent_scores', None)    # list[N][C] or None
                 intent_token_map = {}
                 L = min(len(boxes_ego), len(ilabs))

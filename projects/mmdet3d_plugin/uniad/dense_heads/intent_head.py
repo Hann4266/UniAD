@@ -60,6 +60,11 @@ class IntentHead(BaseIntentHead):
         self._build_layers(transformerlayers, det_layer_num)
         self._init_layers()
         self.obj_type_embed = nn.Embedding(3, embed_dims)
+        self.motion_encoder = nn.Sequential(
+            nn.Linear(4, embed_dims // 2),
+            nn.ReLU(),
+            nn.Linear(embed_dims // 2, embed_dims)
+        )
 
     def _get_obj_type_ids(self, labels):
         """
@@ -143,9 +148,10 @@ class IntentHead(BaseIntentHead):
         logits_last = logits[-1] 
 
         allowed, _ = self._build_allowed_mask_and_ignore(labels)  # (N, C)
+        allowed = allowed.to(logits_last.device)
         neg_inf = torch.finfo(logits_last.dtype).min
 
-        B = intent_scores.shape[0]
+        B = track_query.shape[0]
         result_intent = []
         for bi in range(B):
             masked_logits = logits_last[bi].masked_fill(~allowed, neg_inf)  # (N, C)
@@ -192,12 +198,28 @@ class IntentHead(BaseIntentHead):
         # extract the last frame of the track query
         track_query = track_query[:, -1]
         B, A, D = track_query.shape
+        #type embedding
         labels = track_bbox_results[0][2]
         obj_type_ids = self._get_obj_type_ids(labels)  
         obj_type_ids = obj_type_ids.to(device)        
         obj_type_ids = obj_type_ids.unsqueeze(0).expand(B, -1)  # (B, A)
         type_emb = self.obj_type_embed(obj_type_ids)            # (B, A, D)
-        intent_query = track_query + type_emb                    # (B, A, D)
+
+        #motion embedding
+        bboxes = track_bbox_results[0][0].tensor   # (A, 9)
+        vx = bboxes[:, 7].to(device)              # (A,)
+        vy = bboxes[:, 8].to(device)              # (A,)
+
+        speed   = torch.sqrt(vx**2 + vy**2)       # (A,)
+        heading = torch.atan2(vy, vx)             # (A,)
+
+        motion_feat = torch.stack(
+            [vx, vy, speed, heading], dim=-1      # (A, 4)
+        )
+        motion_emb = self.motion_encoder(motion_feat)             # (A, D)
+        motion_emb = motion_emb.unsqueeze(0).expand(B, -1, -1)   # (B, A, D)
+        
+        intent_query = track_query + type_emb + motion_emb                # (B, A, D)
 
         # encode the center point of the track query
         reference_points_track = self._extract_tracking_centers(
