@@ -314,11 +314,13 @@ class UniAD(UniADTrack):
         result_track[0] = self.upsample_bev_if_tiny(result_track[0])
         
         bev_embed = result_track[0]["bev_embed"]
-
         if self.with_seg_head:
             result_seg =  self.seg_head.forward_test(bev_embed, gt_lane_labels, gt_lane_masks, img_metas, rescale)
         if self.with_intent_head:
-            result_intent, outs_intent = self.intent_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
+            if self.with_seg_head:
+                result_intent, outs_intent = self.intent_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
+            else:
+                result_intent, outs_intent = self.intent_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg={})
         if self.with_motion_head:
             result_motion, outs_motion = self.motion_head.forward_test(bev_embed, outs_track=result_track[0], outs_seg=result_seg[0])
             outs_motion['bev_pos'] = result_track[0]['bev_pos']

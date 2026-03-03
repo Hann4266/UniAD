@@ -218,9 +218,10 @@ class IntentHead(BaseIntentHead):
         )
         motion_emb = self.motion_encoder(motion_feat)             # (A, D)
         motion_emb = motion_emb.unsqueeze(0).expand(B, -1, -1)   # (B, A, D)
+
         
         intent_query = track_query + type_emb + motion_emb                # (B, A, D)
-
+        # intent_query = track_query + type_emb 
         # encode the center point of the track query
         reference_points_track = self._extract_tracking_centers(
             track_bbox_results, self.pc_range).to(device)
