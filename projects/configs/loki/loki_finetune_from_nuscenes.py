@@ -70,6 +70,7 @@ _dim_half_ = _pos_dim_
 canvas_size = (bev_h_, bev_w_)
 
 queue_length = 3
+queue_stride = 4  # 0.8s spacing at 5FPS → 1.6s total history
 
 # --------------------------------------------------------------------- #
 #  Trajectory / prediction args (kept for interface compat)
@@ -410,6 +411,7 @@ data = dict(
         canvas_size=canvas_size,
         bev_size=(bev_h_, bev_w_),
         queue_length=queue_length,
+        queue_stride=queue_stride,
         predict_steps=predict_steps,
         past_steps=past_steps,
         fut_steps=fut_steps,

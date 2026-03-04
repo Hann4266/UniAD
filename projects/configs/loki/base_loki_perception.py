@@ -67,6 +67,10 @@ canvas_size = (bev_h_, bev_w_)
 
 # Temporal queue: 3 frames to save memory (LOKI is ~5 FPS)
 queue_length = 3
+# Temporal stride: skip frames to widen temporal context window.
+# LOKI=5FPS, stride=4 → 0.8s spacing between queue frames → 1.6s total history.
+# Matches nuScenes (2Hz, queue=3 → ~1.0-1.5s history).
+queue_stride = 4
 
 # --------------------------------------------------------------------- #
 #  Trajectory / prediction args (kept for interface compat)
@@ -419,6 +423,7 @@ data = dict(
         canvas_size=canvas_size,
         bev_size=(bev_h_, bev_w_),
         queue_length=queue_length,
+        queue_stride=queue_stride,
         predict_steps=predict_steps,
         past_steps=past_steps,
         fut_steps=fut_steps,

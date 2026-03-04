@@ -157,6 +157,10 @@ class LokiE2EDataset(Custom3DDataset):
                  occ_n_future=4,
                  occ_filter_invalid_sample=False,
 
+                 # Temporal stride (skip frames to widen temporal window)
+                 # stride=4 at 5FPS → 0.8s spacing → 1.6s total history
+                 queue_stride=1,
+
                  # Debug
                  is_debug=False,
                  len_debug=30,
@@ -185,6 +189,8 @@ class LokiE2EDataset(Custom3DDataset):
         self.occ_receptive_field = occ_receptive_field
         self.occ_n_future = occ_n_future
         self.occ_filter_invalid_sample = occ_filter_invalid_sample
+
+        self.queue_stride = queue_stride
 
         self.is_debug = is_debug
         self.len_debug = len_debug
@@ -494,13 +500,16 @@ class LokiE2EDataset(Custom3DDataset):
     def prepare_train_data(self, index):
         """Training data preparation with temporal queue.
 
-        Mirrors NuScenesE2EDataset.prepare_train_data exactly.
+        Mirrors NuScenesE2EDataset.prepare_train_data with stride support.
+        When queue_stride > 1, history frames are selected at wider intervals
+        to increase temporal context (e.g., stride=4 at 5FPS → 0.8s spacing).
         """
         data_queue = []
+        stride = self.queue_stride
 
         # Ensure first and last frame are in the same scene
         final_index = index
-        first_index = index - self.queue_length + 1
+        first_index = index - (self.queue_length - 1) * stride
         if first_index < 0:
             return None
         if self.data_infos[first_index]['scene_token'] != \
@@ -529,9 +538,13 @@ class LokiE2EDataset(Custom3DDataset):
 
         data_queue.insert(0, example)
 
-        # Retrieve previous frames (in reverse order)
-        prev_indexs_list = list(reversed(range(first_index, final_index)))
-        for i in prev_indexs_list:
+        # Retrieve previous frames with stride (in reverse chronological order)
+        # e.g., stride=4, queue_length=3: prev_indices = [index-4, index-8]
+        #        reversed to build queue oldest-first: [index-8, index-4]
+        prev_indices = [index - i * stride
+                        for i in range(1, self.queue_length)]
+        prev_indices.reverse()  # chronological order: oldest first
+        for i in prev_indices:
             input_dict = self.get_data_info(i)
             if input_dict is None:
                 return None
