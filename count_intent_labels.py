@@ -203,6 +203,26 @@ def main(args):
             print(f"  {lbl:>3}  {INTENT_NAMES[lbl]:<22}  {cnt:>8}  "
                   f"imbalance vs majority: {ratio:.1f}x")
     print()
+    for group in ["all", "vehicle", "pedestrian"]:
+        title = {
+            "all":        "MINORITY CLASS IMBALANCE  (all agents, after filter, excl. -1)",
+            "vehicle":    "MINORITY CLASS IMBALANCE  (vehicles only, excl. -1)",
+            "pedestrian": "MINORITY CLASS IMBALANCE  (pedestrians only, excl. -1)",
+        }[group]
+
+        print("\n" + "=" * 65)
+        print(title)
+        print("=" * 65)
+        valid_counts = {k: v for k, v in counters[group].items() if k != -1}
+        if valid_counts:
+            max_cnt = max(valid_counts.values())
+            total   = sum(valid_counts.values())
+            for lbl, cnt in sorted(valid_counts.items(), key=lambda x: x[1]):
+                ratio = max_cnt / cnt if cnt > 0 else float("inf")
+                print(f"  {lbl:>3}  {INTENT_NAMES[lbl]:<22}  {cnt:>8}  "
+                      f"({100*cnt/max(total,1):.2f}%)  "
+                      f"imbalance vs majority: {ratio:.1f}x")
+        print()
 
 
 if __name__ == "__main__":

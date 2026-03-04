@@ -16,6 +16,7 @@ pip install -r requirements.txt
 pip install -U "yapf==0.32.0"
 pip install -U "numpy==1.21.6"
 
+tar -xf ./v1.0-trainval10_blobs.tar --wildcards "samples/CAM_FRONT/*" "sweeps/CAM_FRONT/*"
 
 #dataset
 tar -xvzf /cogrob-avl-west-vol/nuScenes/compressed/v1.0-trainval_meta.tgz
@@ -51,6 +52,7 @@ ln -s /zihan-west-vol/work_dirs ./projects/work_dirs
 
 #eval
 ./tools/uniad_dist_eval.sh ./projects/configs/stage1_track_map/base_track_map_front.py /zihan-west-vol/UniAD/projects/work_dirs/weights/stage1/0215/epoch_6.pth 2
-./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_map.py 8
-./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py ./projects/work_dirs/stage2_e2e/base_intent_fornt/last_train/epoch_20.pth 1
-./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260302_011500/epoch_20.pth 1
+./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260302_011500/epoch_20_type.pth 2
+./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260303_044811/epoch_20.pth 1
+./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_map.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt_no_map/20260302_122059/epoch_20_type.pth 2
+]

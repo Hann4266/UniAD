@@ -1478,7 +1478,7 @@ class NuScenesE2EDataset(NuScenesDataset):
                 nusc_version=self.version,
                 nusc_dataroot=self.data_root
             )
-            self.nusc_eval_track.main()
+            # self.nusc_eval_track.main()
             if 'intent' in self.eval_mod:
                 intent_summary = self.nusc_eval_track.evaluate_intent(
                     data_infos=self.data_infos,
@@ -1490,15 +1490,15 @@ class NuScenesE2EDataset(NuScenesDataset):
                 detail[f'{result_name}_Intent/macro_f1'] = intent_summary['macro_f1']
                 detail[f'{result_name}_Intent/macro_recall'] = intent_summary['macro_recall']
             # record metrics
-            metrics = mmcv.load(
-                osp.join(
-                    output_dir_track,
-                    'metrics_summary.json'))
-            keys = ['amota', 'amotp', 'recall', 'motar',
-                    'gt', 'mota', 'motp', 'mt', 'ml', 'faf',
-                    'tp', 'fp', 'fn', 'ids', 'frag', 'tid', 'lgd']
-            for key in keys:
-                detail['{}/{}'.format(metric_prefix, key)] = metrics[key]
+            # metrics = mmcv.load(
+            #     osp.join(
+            #         output_dir_track,
+            #         'metrics_summary.json'))
+            # keys = ['amota', 'amotp', 'recall', 'motar',
+            #         'gt', 'mota', 'motp', 'mt', 'ml', 'faf',
+            #         'tp', 'fp', 'fn', 'ids', 'frag', 'tid', 'lgd']
+            # for key in keys:
+            #     detail['{}/{}'.format(metric_prefix, key)] = metrics[key]
 
         # if 'map' in self.eval_mod:
         #     for i, ret_iou in enumerate(ret_ious):

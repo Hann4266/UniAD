@@ -106,6 +106,7 @@ class IntentTransformerDecoder(BaseModule):
                 spatial_shapes=torch.tensor([[self.bev_h, self.bev_w]], device=query_embed.device),
                 level_start_index=torch.tensor([0], device=query_embed.device),
             )
+            print("map_query norm:", map_query_embed.norm(dim=-1).mean())
             if self.inter_features and self.map_features:
                 query_embed = torch.cat(
                     [track_query_embed, map_query_embed, bev_query_embed, track_query + track_query_pos],
@@ -192,4 +193,8 @@ class MapInteraction(BaseModule):
             query = query + query_pos
         if key_pos is not None:
             key = key + key_pos
-        return self.interaction_transformer(query, key)
+        output = self.interaction_transformer(query, key)
+        print("query input norm:", query.norm(dim=-1).mean().item())
+        print("key input norm:", key.norm(dim=-1).mean().item())
+        print("output norm:", output.norm(dim=-1).mean().item())
+        return output

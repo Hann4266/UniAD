@@ -20,10 +20,14 @@ def main(args):
     with open(args.input_pkl, "rb") as f:
         data = pickle.load(f)
 
-    print(f"Loading scene tokens: {args.scene_json}")
-    with open(args.scene_json, "r") as f:
-        target_scenes = set(json.load(f))
-    print(f"  Target scenes: {len(target_scenes)}")
+    print(f"Loading scene tokens...")
+    target_scenes = set()
+    for json_path in args.scene_json:
+        with open(json_path, "r") as f:
+            tokens = json.load(f)
+        print(f"  {json_path}: {len(tokens)} scenes")
+        target_scenes.update(tokens)
+    print(f"  Total unique target scenes: {len(target_scenes)}")
 
     infos_all = data["infos"]
     print(f"  Total frames before filter: {len(infos_all)}")
@@ -51,14 +55,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_pkl",  required=True,
                         help="Path to nuscenes_infos_temporal_train.pkl")
-    parser.add_argument("--scene_json", required=True,
-                        help="Path to scene_tokens JSON file (list of scene tokens)")
+    parser.add_argument("--scene_json", required=True, nargs='+',
+                    help="One or more JSON files containing scene tokens")
     parser.add_argument("--output_pkl", required=True,
                         help="Output filtered pkl path")
     args = parser.parse_args()
     main(args)
 
     # python filter_pkl.py \
-    # --input_pkl  /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_val.pkl \
-    # --scene_json ./scene_tokens_val_all_target_scenes.json \
-    # --output_pkl /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_val_intent.pkl
+    # --input_pkl  /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_train_old.pkl \
+    # --scene_json ./scene_tokens_train_lane_change_scenes.json ./scene_tokens_train_turning_scenes.json \
+    # --output_pkl /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_train_tc_target.pkl

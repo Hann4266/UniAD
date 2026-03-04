@@ -227,7 +227,8 @@ class IntentHead(BaseIntentHead):
             track_bbox_results, self.pc_range).to(device)
         track_query_pos = self.boxes_query_embedding_layer(pos2posemb2d(reference_points_track))  # B, A, D
         
-      
+        print("lane_query norm:", lane_query.norm(dim=-1).mean().item())
+        print("lane_query sample:", lane_query[0, 0, :5])  # 打印前5维
         
         all_logits = []
 

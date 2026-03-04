@@ -196,7 +196,7 @@ class PansegformerHead(SegDETRHead):
                 head with normalized coordinate format (cx, cy, w, h). \
                 Shape [nb_dec, bs, num_query, 4].
             enc_outputs_class (Tensor): The score of each point on encode \
-                feature map, has shape (N, h*w, num_class). Only when \
+                feature map, has shape ( N, h*w, num_class). Only when \
                 as_two_stage is True it would be returned, otherwise \
                 `None` would be returned.
             enc_outputs_coord (Tensor): The proposal generate from the \
@@ -207,8 +207,13 @@ class PansegformerHead(SegDETRHead):
         _, bs, _ = bev_embed.shape
 
         mlvl_feats = [torch.reshape(bev_embed, (bs, self.bev_h, self.bev_w ,-1)).permute(0, 3, 1, 2)]
-        img_masks = mlvl_feats[0].new_zeros((bs, self.bev_h, self.bev_w))
-
+        # img_masks = mlvl_feats[0].new_zeros((bs, self.bev_h, self.bev_w))
+        img_masks = mlvl_feats[0].new_ones((bs, self.bev_h, self.bev_w))
+        cx = self.bev_w // 2
+        for h in range(self.bev_h):
+            ratio = (self.bev_h - h) / self.bev_h
+            half_w = int(ratio * self.bev_w * 0.35)
+            img_masks[:, h, max(0, cx-half_w):min(self.bev_w, cx+half_w)] = 0
         hw_lvl = [feat_lvl.shape[-2:] for feat_lvl in mlvl_feats]
         mlvl_masks = []
         mlvl_positional_encodings = []
@@ -897,8 +902,11 @@ class PansegformerHead(SegDETRHead):
             mask_targets_things = F.interpolate(mask_things_gt.unsqueeze(0),
                                                 size=mask_preds.shape[-2:],
                                                 mode='bilinear').squeeze(0)
-            loss_mask_things = self.loss_mask(mask_preds,
-                                              mask_targets_things,
+            fov_mask = self._get_fov_pixel_mask(
+                mask_preds.shape[-2], mask_preds.shape[-1], mask_preds.device
+            ).unsqueeze(0)                                  
+            loss_mask_things = self.loss_mask(mask_preds * fov_mask,
+                                              mask_targets_things * fov_mask,
                                               mask_weight_things,
                                               avg_factor=num_total_pos_thing)
         if mask_preds_stuff.shape[0] == 0:
@@ -910,9 +918,11 @@ class PansegformerHead(SegDETRHead):
             mask_targets_stuff = F.interpolate(mask_stuff_gt.unsqueeze(0),
                                                size=mask_preds.shape[-2:],
                                                mode='bilinear').squeeze(0)
-
-            loss_mask_stuff = self.loss_mask(mask_preds,
-                                             mask_targets_stuff,
+            fov_mask = self._get_fov_pixel_mask(
+                mask_preds.shape[-2], mask_preds.shape[-1], mask_preds.device
+            ).unsqueeze(0)
+            loss_mask_stuff = self.loss_mask(mask_preds * fov_mask,
+                                             mask_targets_stuff * fov_mask,
                                              mask_weight_stuff,
                                              avg_factor=num_total_pos_stuff)
 
@@ -929,8 +939,13 @@ class PansegformerHead(SegDETRHead):
                     mask_preds_this_level.unsqueeze(0),
                     scale_factor=2.0,
                     mode='bilinear').squeeze(0)
-                loss_mask_j = self.loss_mask(mask_preds_this_level,
-                                             mask_targets_things,
+                fov_mask = self._get_fov_pixel_mask(         
+                    mask_preds_this_level.shape[-2],
+                    mask_preds_this_level.shape[-1],
+                    mask_preds_this_level.device
+                ).unsqueeze(0)
+                loss_mask_j = self.loss_mask(mask_preds_this_level * fov_mask,
+                                             mask_targets_things * fov_mask,
                                              mask_weight_things,
                                              avg_factor=num_total_pos_thing)
             loss_mask_things_list.append(loss_mask_j)
@@ -961,8 +976,13 @@ class PansegformerHead(SegDETRHead):
                     mask_preds_this_level.unsqueeze(0),
                     scale_factor=2.0,
                     mode='bilinear').squeeze(0)
-                loss_mask_j = self.loss_mask(mask_preds_this_level,
-                                             mask_targets_stuff,
+                fov_mask = self._get_fov_pixel_mask(        
+                    mask_preds_this_level.shape[-2],
+                    mask_preds_this_level.shape[-1],
+                    mask_preds_this_level.device
+                ).unsqueeze(0)
+                loss_mask_j = self.loss_mask(mask_preds_this_level*fov_mask,
+                                             mask_targets_stuff*fov_mask,
                                              mask_weight_stuff,
                                              avg_factor=num_total_pos_stuff)
             loss_mask_stuff_list.append(loss_mask_j)
@@ -1001,7 +1021,14 @@ class PansegformerHead(SegDETRHead):
                 num_total_pos_stuff + num_total_pos_thing)
 
         return loss_cls, loss_bbox, loss_iou, loss_mask_things, loss_mask_stuff, loss_mask_things_list, loss_mask_stuff_list, loss_iou_list, loss_bbox_list, loss_cls_thing_list, loss_cls_stuff_list, things_ratio, stuff_ratio
-    
+    def _get_fov_pixel_mask(self, h, w, device):
+        mask = torch.zeros(h, w, dtype=torch.float32, device=device)
+        cx = w // 2
+        for row in range(h):
+            ratio = (h - row) / h
+            half_width = int(ratio * w * 0.35)
+            mask[row, max(0, cx-half_width):min(w, cx+half_width)] = 1.0
+        return mask
     def forward_test(self,
                     pts_feats=None,
                     gt_lane_labels=None,

@@ -267,6 +267,153 @@ class TrackingEval:
         self.nusc = nusc
         self.pred_boxes = pred_boxes
         self.gt_boxes = gt_boxes
+    def visualize_intent_bev(self, sample_token, pred_intent, intent_data, token2meta,
+                          intent_label_fn, output_dir,data_infos, num_intent_classes=7,
+                          intent_class_names=('STOPPED','MOVING','CROSSING',
+                                              'TURN_RIGHT','TURN_LEFT',
+                                              'LANE_CHANGE_RIGHT','LANE_CHANGE_LEFT')):
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+         # ── 获取ego pose ──────────────────────────────────────────
+        sample_record = self.nusc.get('sample', sample_token)
+        sd_record     = self.nusc.get('sample_data', sample_record['data']['CAM_FRONT'])
+        pose_record   = self.nusc.get('ego_pose', sd_record['ego_pose_token'])
+
+        ego_translation = np.array(pose_record['translation'][:2])   # (ex, ey)
+        ego_q           = Quaternion(pose_record['rotation'])
+        ego_yaw         = ego_q.yaw_pitch_roll[0]
+        cos_y, sin_y    = np.cos(-ego_yaw), np.sin(-ego_yaw)
+
+        def to_ego(global_xy):
+            """Transform global (x,y) → ego-relative (x,y)"""
+            dx = global_xy[0] - ego_translation[0]
+            dy = global_xy[1] - ego_translation[1]
+            ex =  cos_y * dx - sin_y * dy
+            ey =  sin_y * dx + cos_y * dy
+            return ex, ey
+
+        COLORS = ['gray','red','pink','purple','orange','blue','green']
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+
+        mp = pred_intent.get(sample_token, {})
+        prs = self.pred_boxes[sample_token]
+        gts = self.gt_boxes[sample_token]
+
+        # Plot ego
+        ax.plot(0, 0, 'k*', markersize=15, label='Ego')
+
+        # Plot predictions
+        for b in prs:
+            tid = str(b.tracking_id)
+            if tid not in mp:
+                continue
+            intent = int(mp[tid])
+            ex, ey = to_ego(b.translation[:2])
+            color = COLORS[intent % len(COLORS)]
+            ax.scatter(ex, ey, c=color, s=100, marker='^', zorder=5)
+            ax.text(ex + 0.5, ey + 0.5, intent_class_names[intent], fontsize=7, color=color)
+
+        # Plot GT
+        token2meta_local = {}
+        for info in data_infos:
+            tok = info.get('token')
+            if tok:
+                token2meta_local[tok] = (info['scene_token'], int(info['frame_idx']))
+
+        for b in gts:
+            gt_intent = -1
+            if sample_token in token2meta_local:
+                scene_token, frame_idx = token2meta_local[sample_token]
+                gt_tok = str(b.tracking_id)
+                if scene_token in intent_data and gt_tok in intent_data[scene_token]:
+                    arr = intent_data[scene_token][gt_tok]['labels']
+                    gt_intent = int(intent_label_fn(frame_idx, arr))
+            ex, ey = to_ego(b.translation[:2])
+            color = COLORS[gt_intent % len(COLORS)] if gt_intent >= 0 else 'black'
+            ax.scatter(ex, ey, c=color, s=100, marker='o', zorder=4, alpha=0.4)
+
+        # Legend
+        patches = [mpatches.Patch(color=COLORS[i], label=intent_class_names[i])
+                for i in range(num_intent_classes)]
+        ax.legend(handles=patches, loc='upper right', fontsize=8)
+        ax.set_title(f'Intent BEV — {sample_token[:16]}')
+        ax.set_xlabel('X (m)'); ax.set_ylabel('Y (m)')
+        ax.set_xlim(-55, 55)
+        ax.set_ylim(0, 55)
+        ax.set_aspect('equal')
+        ax.grid(False)
+        os.makedirs(output_dir, exist_ok=True)
+        fig.savefig(os.path.join(output_dir, f'bev_{sample_token[:16]}.png'), dpi=100)
+        plt.close(fig)
+    def visualize_confusion_matrix(self, cm, intent_class_names, output_dir):
+        """
+        Visualize confusion matrix as a heatmap.
+        cm: (N, N) numpy array
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+
+        num_classes = len(intent_class_names)
+        
+        # Normalize by row (GT) for better readability
+        cm_norm = cm.astype(np.float32)
+        row_sum = cm.sum(axis=1, keepdims=True)
+        row_sum = np.maximum(row_sum, 1)
+        cm_norm = cm_norm / row_sum  # each row sums to 1
+
+        # short names for display
+        short_names = ['STO', 'MOV', 'CRO', 'TR', 'TL', 'LCR', 'LCL']
+
+        fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+
+        # ---- Plot 1: Raw counts ----
+        ax = axes[0]
+        im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+        ax.set_title('Confusion Matrix (counts)', fontsize=13, fontweight='bold')
+        ax.set_xlabel('Predicted', fontsize=11)
+        ax.set_ylabel('Ground Truth', fontsize=11)
+        ax.set_xticks(range(num_classes))
+        ax.set_yticks(range(num_classes))
+        ax.set_xticklabels(short_names, rotation=45, ha='right', fontsize=10)
+        ax.set_yticklabels(short_names, fontsize=10)
+        plt.colorbar(im, ax=ax)
+
+        thresh = cm.max() / 2.0
+        for i in range(num_classes):
+            for j in range(num_classes):
+                ax.text(j, i, str(cm[i, j]),
+                        ha='center', va='center', fontsize=9,
+                        color='white' if cm[i, j] > thresh else 'black')
+
+        # ---- Plot 2: Normalized (row) ----
+        ax = axes[1]
+        im2 = ax.imshow(cm_norm, interpolation='nearest', cmap='Blues', vmin=0, vmax=1)
+        ax.set_title('Confusion Matrix (row-normalized)', fontsize=13, fontweight='bold')
+        ax.set_xlabel('Predicted', fontsize=11)
+        ax.set_ylabel('Ground Truth', fontsize=11)
+        ax.set_xticks(range(num_classes))
+        ax.set_yticks(range(num_classes))
+        ax.set_xticklabels(short_names, rotation=45, ha='right', fontsize=10)
+        ax.set_yticklabels(short_names, fontsize=10)
+        plt.colorbar(im2, ax=ax)
+
+        for i in range(num_classes):
+            for j in range(num_classes):
+                ax.text(j, i, f'{cm_norm[i, j]:.2f}',
+                        ha='center', va='center', fontsize=9,
+                        color='white' if cm_norm[i, j] > 0.5 else 'black')
+
+        # full class names as legend
+        legend_text = '  |  '.join([f'{s}={n}' for s, n in zip(short_names, intent_class_names)])
+        fig.text(0.5, 0.01, legend_text, ha='center', fontsize=9, color='gray')
+
+        plt.tight_layout(rect=[0, 0.04, 1, 1])
+        save_path = os.path.join(output_dir, 'confusion_matrix.png')
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"[IntentEval] Confusion matrix saved to {save_path}")
     def evaluate_intent(self,
                     data_infos,
                     intent_data,
@@ -421,7 +568,11 @@ class TrackingEval:
                 'tp': int(tp[i]),
                 'pred_cnt': int(predcnt[i]),
             }
-
+        self.visualize_confusion_matrix(
+            cm=cm,
+            intent_class_names=intent_class_names,
+            output_dir=output_dir
+        )
         summary = dict(
             matched=total,
             acc=acc,
@@ -443,6 +594,13 @@ class TrackingEval:
             for name in intent_class_names:
                 m = per_class[name]
                 print(f"  {name:16s}  P={m['precision']:.3f}  R={m['recall']:.3f}  F1={m['f1']:.3f}  supp={m['support']}")
+        
+        # for sample_token in list(self.gt_boxes.sample_tokens)[:10]:
+        #     self.visualize_intent_bev(sample_token, pred_intent, intent_data, token2meta,
+        #                   intent_label_fn, output_dir,data_infos, num_intent_classes=7,
+        #                   intent_class_names=('STOPPED','MOVING','CROSSING',
+        #                                       'TURN_RIGHT','TURN_LEFT',
+        #                                       'LANE_CHANGE_RIGHT','LANE_CHANGE_LEFT'))
 
         return summary
     def evaluate(self) -> Tuple[TrackingMetrics, TrackingMetricDataList]:

@@ -180,14 +180,14 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ann_file", default="/zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_train_old.pkl")
+    parser.add_argument("--ann_file", default="/zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_val.pkl")
     parser.add_argument("--intent_file",
                         default="/zihan-west-vol/UniAD/data/nuscenes/unified_map_v3/all_scenes_compact_new.json")
     parser.add_argument("--point_cloud_range", type=float, nargs=6,
                         default=[-51.2, 0, -5.0, 51.2, 51.2, 3.0],
                         metavar=("X_MIN","Y_MIN","Z_MIN","X_MAX","Y_MAX","Z_MAX"))
     parser.add_argument("--fov_deg", type=float, default=70.0)
-    parser.add_argument("--output_prefix", default="./scene_tokens_train",
+    parser.add_argument("--output_prefix", default="./scene_tokens_val",
                         help="Prefix for output JSON files, e.g. ./scene_tokens")
     args = parser.parse_args()
     main(args)
