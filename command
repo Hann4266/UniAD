@@ -45,7 +45,7 @@ ln -s /root/nuscenes ./data/nuscenes
 ln -s /zihan-west-vol/work_dirs ./projects/work_dirs
 
 #train
-./tools/uniad_dist_train.sh ./projects/configs/stage1_track_map/base_track_map_front.py 1
+./tools/uniad_dist_train.sh ./projects/configs/stage1_track_map/base_track_map_front.py 8
 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt.py 1
 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_map.py 8
 ./tools/uniad_dist_train.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_interaction.py 8
@@ -55,4 +55,4 @@ ln -s /zihan-west-vol/work_dirs ./projects/work_dirs
 ./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260302_011500/epoch_20_type.pth 2
 ./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260303_044811/epoch_20.pth 1
 ./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt_no_map.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt_no_map/20260302_122059/epoch_20_type.pth 2
-]
+./tools/uniad_dist_eval.sh ./projects/configs/stage2_e2e/base_intent_fornt.py /zihan-west-vol/UniAD/projects/work_dirs/stage2_e2e/base_intent_fornt/20260304_100825/epoch_20_330.pth 1

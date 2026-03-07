@@ -65,4 +65,4 @@ if __name__ == "__main__":
     # python filter_pkl.py \
     # --input_pkl  /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_train_old.pkl \
     # --scene_json ./scene_tokens_train_lane_change_scenes.json ./scene_tokens_train_turning_scenes.json \
-    # --output_pkl /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_train_tc_target.pkl
+    # --output_pkl /zihan-west-vol/UniAD/data/infos/nuscenes_infos_temporal_train_tc_target_new.pkl

@@ -63,10 +63,15 @@ def intent_label(index, action_array):
     action_set = {"Crossing", "TURN_RIGHT", "TURN_LEFT", "LANE_CHANGE_RIGHT", "LANE_CHANGE_LEFT"}
     
     if action in action_set:
-        for next_action in future_actions:
-            if next_action != action and next_action!= "na":
-                return intent_dic[next_action]
-        return intent_dic[action]
+        # for next_action in future_actions:
+        #     if next_action != action and next_action!= "na":
+        #         return intent_dic[next_action]
+        # return intent_dic[action]
+        next_action = future_actions[0]
+        if next_action != action and next_action != "na":
+            return intent_dic[next_action]
+        else:
+            return intent_dic[action]
     elif action == "STOPPED" or action == "Stopped":
         next_moving = False
         for next_action in future_actions:

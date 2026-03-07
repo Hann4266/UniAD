@@ -158,8 +158,8 @@ class IntentHead(BaseIntentHead):
             intent_scores = F.softmax(masked_logits, dim=-1)
             intent_label = torch.argmax(intent_scores, dim=-1)
             result_intent.append(dict(
-                intent_scores=intent_scores[bi].detach().cpu().tolist(),  # [N,C]
-                intent_label=intent_label[bi].detach().cpu().tolist(),    # [N]
+                intent_scores=intent_scores.detach().cpu().tolist(),  # [N,C]
+                intent_label=intent_label.detach().cpu().tolist(),    # [N]
                 intent_bbox_index=bbox_index.detach().cpu().tolist(),     # [N] 
             ))
 
@@ -227,8 +227,8 @@ class IntentHead(BaseIntentHead):
             track_bbox_results, self.pc_range).to(device)
         track_query_pos = self.boxes_query_embedding_layer(pos2posemb2d(reference_points_track))  # B, A, D
         
-        print("lane_query norm:", lane_query.norm(dim=-1).mean().item())
-        print("lane_query sample:", lane_query[0, 0, :5])  # 打印前5维
+        # print("lane_query norm:", lane_query.norm(dim=-1).mean().item())
+        # print("lane_query sample:", lane_query[0, 0, :5])  # 打印前5维
         
         all_logits = []
 

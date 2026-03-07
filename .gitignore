@@ -13,6 +13,7 @@ ckpts/
 data
 data_carla
 viz/
+vis_intent
 .Python
 build/
 develop-eggs/

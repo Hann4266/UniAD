@@ -350,7 +350,9 @@ model = dict(
             alpha=0.25,
             loss_weight=5.0
             ped_loss_weight=2.0,
-            class_weight=[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+            # class_weight=[1.0, 1.39, 3.21, 6.19, 5.44, 10.05, 11.15]
+            # class_weight = [0.5, 0.5, 3.82, 6.4, 5.51, 10.62, 11.9]
+            class_weight = [0.5, 0.5, 6.7, 14.8, 18.3, 50.5, 66]
         ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',   
@@ -568,7 +570,7 @@ data = dict(
         classes=class_names,
         modality=input_modality,
         samples_per_gpu=1,
-        eval_mod=['det', 'map', 'track','intent'],
+        eval_mod=['track','intent'],
         
 
         occ_receptive_field=3,

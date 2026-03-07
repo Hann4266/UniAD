@@ -414,6 +414,7 @@ class TrackingEval:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f"[IntentEval] Confusion matrix saved to {save_path}")
+    
     def evaluate_intent(self,
                     data_infos,
                     intent_data,
@@ -434,7 +435,7 @@ class TrackingEval:
         - only evaluate tracking boxes whose tracking_name in eval_track_names
         - report per-intent-class precision/recall/F1 + confusion matrix
         """
-
+        export = {}
         if output_dir is None:
             output_dir = os.path.join(self.output_dir, 'intent')
         os.makedirs(output_dir, exist_ok=True)
@@ -496,18 +497,20 @@ class TrackingEval:
                 if len(gts) == 0 or len(prs) == 0:
                     continue
 
-                gt_y, gt_xy = [], []
+                gt_y, gt_xy, gt_boxes_valid = [], [], []
                 for b in gts:
                     y = get_gt_intent(sample_token, b.tracking_id)
                     if y < 0 or y >= num_intent_classes:
                         continue
                     gt_y.append(y)
                     gt_xy.append(np.array(b.translation[:2], dtype=np.float32))
+                    gt_boxes_valid.append(b)
                 if len(gt_y) == 0:
                     continue
 
-                pr_y, pr_xy = [], []
+                pr_y, pr_xy, pr_boxes_valid = [], [], []
                 mp = pred_intent.get(sample_token, {})
+                # print(f"sample {sample_token[:16]} mp keys: {list(mp.keys())}")
                 for b in prs:
                     tid = str(b.tracking_id)
                     if tid not in mp:
@@ -517,6 +520,7 @@ class TrackingEval:
                         continue
                     pr_y.append(y)
                     pr_xy.append(np.array(b.translation[:2], dtype=np.float32))
+                    pr_boxes_valid.append(b) 
                 if len(pr_y) == 0:
                     continue
 
@@ -540,7 +544,51 @@ class TrackingEval:
                 for i, j in zip(gi, pj):
                     if cost[i, j] <= dist_th:
                         cm[gt_y[i], pr_y[j]] += 1
+                        #----save match----
+                        gt_b = gt_boxes_valid[i]
+                        pr_b = pr_boxes_valid[j]
+                        gt_label = gt_y[i]
+                        pr_label = pr_y[j]
 
+                        match = {
+                            "tracking_name": cls,
+                            "dist": round(float(cost[i, j]), 4),
+                            "correct": bool(gt_label == pr_label),
+                            "gt": {
+                                "tracking_id":  str(gt_b.tracking_id),
+                                "translation":  [round(v, 4) for v in gt_b.translation],
+                                "size":         [round(v, 4) for v in gt_b.size],
+                                "rotation":     [round(v, 4) for v in gt_b.rotation],
+                                "intent_label": gt_label,
+                                "intent_name":  intent_class_names[gt_label],
+                            },
+                            "pred": {
+                                "tracking_id":    str(pr_b.tracking_id),
+                                "translation":    [round(v, 4) for v in pr_b.translation],
+                                "size":           [round(v, 4) for v in pr_b.size],
+                                "rotation":       [round(v, 4) for v in pr_b.rotation],
+                                "intent_label":   pr_label,
+                                "intent_name":    intent_class_names[pr_label],
+                                "tracking_score": round(float(pr_b.tracking_score), 4),
+                            },
+                        }
+
+                        scene_token, frame_idx = token2meta[sample_token]
+                        if scene_token not in export:
+                            export[scene_token] = {}
+                        if str(frame_idx) not in export[scene_token]:
+                            export[scene_token][str(frame_idx)] = {
+                                "sample_token": sample_token,
+                                "frame_idx": frame_idx,
+                                "matches": []
+                            }
+                        export[scene_token][str(frame_idx)]["matches"].append(match)
+        #----save match-----
+        import json
+        save_path = os.path.join(output_dir, 'intent_matches.json')
+        with open(save_path, 'w') as f:
+            json.dump(export, f, indent=2)
+        print(f"Saved intent matches → {save_path}")
         # ---------- metrics ----------
         total = int(cm.sum())
         acc = float(np.trace(cm) / max(total, 1))
@@ -568,11 +616,11 @@ class TrackingEval:
                 'tp': int(tp[i]),
                 'pred_cnt': int(predcnt[i]),
             }
-        self.visualize_confusion_matrix(
-            cm=cm,
-            intent_class_names=intent_class_names,
-            output_dir=output_dir
-        )
+        # self.visualize_confusion_matrix(
+        #     cm=cm,
+        #     intent_class_names=intent_class_names,
+        #     output_dir=output_dir
+        # )
         summary = dict(
             matched=total,
             acc=acc,

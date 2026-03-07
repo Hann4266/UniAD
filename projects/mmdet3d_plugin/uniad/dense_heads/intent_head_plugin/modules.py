@@ -34,8 +34,8 @@ class IntentTransformerDecoder(BaseModule):
         self.num_layers = num_layers
         self.inter_features = inter_features
         self.map_features = map_features
-        print("map_features",self.map_features)
-        print("inter_features",self.inter_features)
+        # print("map_features",self.map_features)
+        # print("inter_features",self.inter_features)
         # agent-agent and agent-map interactions (same spirit as MotionTransformerDecoder)
         self.track_agent_interaction_layers = nn.ModuleList(
             [TrackAgentInteraction(embed_dims=embed_dims) for _ in range(self.num_layers)]
@@ -106,7 +106,7 @@ class IntentTransformerDecoder(BaseModule):
                 spatial_shapes=torch.tensor([[self.bev_h, self.bev_w]], device=query_embed.device),
                 level_start_index=torch.tensor([0], device=query_embed.device),
             )
-            print("map_query norm:", map_query_embed.norm(dim=-1).mean())
+            # print("map_query norm:", map_query_embed.norm(dim=-1).mean())
             if self.inter_features and self.map_features:
                 query_embed = torch.cat(
                     [track_query_embed, map_query_embed, bev_query_embed, track_query + track_query_pos],
@@ -194,7 +194,7 @@ class MapInteraction(BaseModule):
         if key_pos is not None:
             key = key + key_pos
         output = self.interaction_transformer(query, key)
-        print("query input norm:", query.norm(dim=-1).mean().item())
-        print("key input norm:", key.norm(dim=-1).mean().item())
-        print("output norm:", output.norm(dim=-1).mean().item())
+        # print("query input norm:", query.norm(dim=-1).mean().item())
+        # print("key input norm:", key.norm(dim=-1).mean().item())
+        # print("output norm:", output.norm(dim=-1).mean().item())
         return output
