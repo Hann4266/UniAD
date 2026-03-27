@@ -87,7 +87,7 @@ LOKI class IDs for intent masking: `vehicle_id_list=[1,2,3,4,5,6]` (Car,Bus,Truc
 - `obj_type_embed`: Embedding(3, D) adds learned type embeddings (0=ped, 1=veh, 2=ignore) to track queries before the decoder — same as main branch.
 - `motion_encoder`: `Linear(4→D/2) → ReLU → Linear(D/2→D)` encodes per-agent motion features `[vx, vy, speed, heading]` into a D-dim embedding. Added to track query alongside type embedding: `intent_query = track_query + type_emb + motion_emb`.
 - Per-layer classification branches: `Linear(D,D) → LN → ReLU → Linear(D,D) → LN → ReLU → Linear(D,7)`
-- Loss: masked softmax focal loss with sqrt-inverse-frequency class weights `[1.18, 1.0, 15.49, 12.77, 5.38, 6.32, 2.24]` (computed from LOKI train distribution). `ped_loss_weight=1.0` (LOKI has proportionally more pedestrians than nuScenes).
+- Loss: masked softmax focal loss with sqrt-inverse-frequency class weights `[1.21, 1.00, 9.19, 9.19, 4.11, 4.53, 2.53]` (computed from intent-filtered LOKI train distribution, 410/515 scenes after removing boring STOP+MOVING-only scenes). `ped_loss_weight=1.0` (LOKI has proportionally more pedestrians than nuScenes).
 
 ### Track-to-Intent Mapping
 Hungarian matching in the tracking head produces `track_query_matched_idxes[query_i] = gt_j`. GT intent labels are parallel arrays to GT bboxes: `gt_labels_intent[gt_j]` gives intent for GT object j. The loss function uses this mapping to assign GT intent labels to predicted track queries. SDC (ego) is appended with `match_index=-1` (unmatched).

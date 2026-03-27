@@ -1351,6 +1351,7 @@ class LokiE2EDataset(Custom3DDataset):
             dict: flat metrics dict with intent/ prefix.
         """
         from scipy.optimize import linear_sum_assignment
+        import json as _json
 
         print('\n' + '=' * 70)
         print('  LOKI Intent Evaluation')
@@ -1358,6 +1359,7 @@ class LokiE2EDataset(Custom3DDataset):
 
         num_cls = len(self.INTENT_CLASS_NAMES)
         cm = np.zeros((num_cls, num_cls), dtype=np.int64)
+        export = {}  # scene_token -> frame_idx_str -> {matches: [...]}
 
         for sample_id, det in enumerate(bbox_results):
             info = self.data_infos[sample_id]
@@ -1382,7 +1384,7 @@ class LokiE2EDataset(Custom3DDataset):
             cam_vis = info.get('gt_camera_visible', None)
             if cam_vis is not None:
                 cam_vis = cam_vis[mask]
-            gt_centers, gt_intents = [], []
+            gt_centers, gt_intents, gt_boxes_valid, gt_names_valid = [], [], [], []
             for i in range(len(gt_boxes_raw)):
                 det_name = PKL_TO_CONFIG.get(gt_names_raw[i], gt_names_raw[i])
                 if det_name not in self.CLASSES:
@@ -1401,6 +1403,8 @@ class LokiE2EDataset(Custom3DDataset):
                     continue
                 gt_centers.append(center)
                 gt_intents.append(y)
+                gt_boxes_valid.append(gt_boxes_raw[i])
+                gt_names_valid.append(det_name)
 
             if len(gt_intents) == 0:
                 continue
@@ -1421,10 +1425,14 @@ class LokiE2EDataset(Custom3DDataset):
             if pred_centers_all.is_cuda:
                 pred_centers_all = pred_centers_all.cpu()
             pred_centers_all = pred_centers_all.numpy()[:, :2]
+            pred_boxes_all = boxes_3d.tensor.numpy()
 
             # Match pred intent_label to tracked boxes via bbox_index
             bbox_index = det.get('intent_bbox_index', None)
-            pred_centers, pred_intents = [], []
+            pred_centers, pred_intents, pred_boxes_valid = [], [], []
+            pred_track_ids = det.get('track_ids', None)
+            pred_scores = det.get('track_scores', None)
+            pred_intent_meta = []  # parallel to pred_centers
             if bbox_index is not None:
                 for k, bidx in enumerate(bbox_index):
                     if k >= len(pred_ilabels):
@@ -1440,6 +1448,11 @@ class LokiE2EDataset(Custom3DDataset):
                         continue
                     pred_centers.append(center)
                     pred_intents.append(y)
+                    pred_boxes_valid.append(pred_boxes_all[bidx])
+                    pred_intent_meta.append(dict(
+                        track_id=int(pred_track_ids[bidx]) if pred_track_ids is not None else -1,
+                        score=float(pred_scores[bidx]) if pred_scores is not None else -1.0,
+                    ))
             else:
                 # Fallback: intent_label is parallel to boxes_3d
                 for k in range(min(len(pred_ilabels), len(pred_centers_all))):
@@ -1451,6 +1464,11 @@ class LokiE2EDataset(Custom3DDataset):
                         continue
                     pred_centers.append(center)
                     pred_intents.append(y)
+                    pred_boxes_valid.append(pred_boxes_all[k])
+                    pred_intent_meta.append(dict(
+                        track_id=int(pred_track_ids[k]) if pred_track_ids is not None else -1,
+                        score=float(pred_scores[k]) if pred_scores is not None else -1.0,
+                    ))
 
             if len(pred_intents) == 0:
                 continue
@@ -1463,9 +1481,55 @@ class LokiE2EDataset(Custom3DDataset):
             cost = np.linalg.norm(
                 gt_xy[:, None, :] - pr_xy[None, :, :], axis=-1)
             gi, pj = linear_sum_assignment(cost)
+
+            scene_token = info['scene_token']
+            frame_idx = int(info['frame_idx'])
+            sample_token = info['token']
+
             for i, j in zip(gi, pj):
                 if cost[i, j] <= dist_th:
                     cm[gt_intents[i], pred_intents[j]] += 1
+
+                    gt_box = gt_boxes_valid[i]
+                    pr_box = pred_boxes_valid[j]
+                    match = {
+                        "tracking_name": gt_names_valid[i],
+                        "dist": round(float(cost[i, j]), 4),
+                        "correct": bool(gt_intents[i] == pred_intents[j]),
+                        "gt": {
+                            "translation": [round(float(v), 4) for v in gt_box[:3]],
+                            "size": [round(float(v), 4) for v in gt_box[3:6]],
+                            "yaw": round(float(gt_box[6]), 4),
+                            "intent_label": gt_intents[i],
+                            "intent_name": self.INTENT_CLASS_NAMES[gt_intents[i]],
+                        },
+                        "pred": {
+                            "tracking_id": pred_intent_meta[j]['track_id'],
+                            "translation": [round(float(v), 4) for v in pr_box[:3]],
+                            "size": [round(float(v), 4) for v in pr_box[3:6]],
+                            "yaw": round(float(pr_box[6]), 4),
+                            "intent_label": pred_intents[j],
+                            "intent_name": self.INTENT_CLASS_NAMES[pred_intents[j]],
+                            "tracking_score": pred_intent_meta[j]['score'],
+                        },
+                    }
+                    if scene_token not in export:
+                        export[scene_token] = {}
+                    fkey = str(frame_idx)
+                    if fkey not in export[scene_token]:
+                        export[scene_token][fkey] = {
+                            "sample_token": sample_token,
+                            "frame_idx": frame_idx,
+                            "matches": [],
+                        }
+                    export[scene_token][fkey]["matches"].append(match)
+
+        # --- Save intent matches JSON ---
+        if export:
+            save_path = os.path.join('.', 'intent_matches.json')
+            with open(save_path, 'w') as f:
+                _json.dump(export, f, indent=2)
+            print(f'Saved intent matches -> {save_path}')
 
         # --- Compute metrics ---
         total = int(cm.sum())
