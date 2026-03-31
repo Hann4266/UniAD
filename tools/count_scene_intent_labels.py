@@ -3,9 +3,9 @@ Count how many LOKI scenes contain at least one agent with a target
 intent label (after FOV + range + camera-visibility filter).
 
 Target labels (LOKI IDs):
-  2=LCL, 3=LCR, 4=TL, 5=TR, 6=CROSSING
+  2=LCL, 3=LCR, 4=TL, 5=TR
 
-"Boring" scenes contain only STOPPED (0) and MOVING (1).
+"Boring" scenes contain only STOPPED (0), MOVING (1), and CROSSING (6).
 
 Adapted from main branch count_scene_labels.py — simplified because
 LOKI stores gt_intent_labels directly in the pkl.
@@ -23,13 +23,12 @@ import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 
-TARGET_LABELS = {2, 3, 4, 5, 6}
+TARGET_LABELS = {2, 3, 4, 5}
 TARGET_NAMES = {
     2: "LCL",
     3: "LCR",
     4: "TL",
     5: "TR",
-    6: "CROSSING",
 }
 
 INTENT_NAMES = {
@@ -139,7 +138,7 @@ def main(args):
     # Sub-groups
     scenes_turning = scenes_per_label[4] | scenes_per_label[5]
     scenes_lc = scenes_per_label[2] | scenes_per_label[3]
-    scenes_crossing = scenes_per_label[6]
+    scenes_crossing = {s for s, lbls in scene_all_labels.items() if 6 in lbls}
 
     # ── save scene tokens to JSON ────────────────────────────────────────
     base = os.path.splitext(os.path.basename(args.ann_file))[0]
@@ -174,7 +173,7 @@ def main(args):
     print(f"Total scenes                               : {total_scenes}")
     print(f"Interesting (has target label)              : {len(scenes_with_any):>5}  "
           f"({100 * len(scenes_with_any) / max(total_scenes, 1):.1f}%)")
-    print(f"Boring (only STOP + MOVING)                : {len(boring_scenes):>5}  "
+    print(f"Boring (only STOP + MOVING + CROSSING)     : {len(boring_scenes):>5}  "
           f"({100 * len(boring_scenes) / max(total_scenes, 1):.1f}%)")
     print("-" * 65)
     print(f"  with TURNING   (TL or TR)                : {len(scenes_turning):>5}  "

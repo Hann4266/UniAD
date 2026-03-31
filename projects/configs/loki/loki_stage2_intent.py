@@ -261,7 +261,7 @@ model = dict(
             alpha=0.25,
             loss_weight=5.0,
             ped_loss_weight=1.0,
-            class_weight=[1.21, 1.00, 9.19, 9.19, 4.11, 4.53, 2.53]
+            class_weight=[1.20, 1.00, 8.61, 8.61, 3.85, 4.25, 2.58]
         ),
         transformerlayers=dict(
             type='IntentTransformerDecoder',
