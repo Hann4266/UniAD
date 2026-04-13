@@ -174,6 +174,11 @@ model = dict(
         transformer=dict(
             type="PerceptionTransformer",
             rotate_prev_bev=True,
+            # Ego is at (col=bev_w/2, row=0) in the BEV tensor because
+            # pc_range y ∈ [0, 51.2] (forward-only, ego at y=0). The default
+            # rotate_center=[100, 100] is wrong for LOKI's 100x200 asymmetric
+            # grid — it pivots around a phantom point below the grid.
+            rotate_center=[bev_w_ // 2, 0],
             use_shift=True,
             use_can_bus=True,
             embed_dims=_dim_,

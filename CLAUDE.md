@@ -10,6 +10,21 @@ UniAD (Unified Autonomous Driving) adapted to work with the LOKI dataset (single
 - `R_inv` (new→old): `[[0,1,0],[-1,0,0],[0,0,1]]` applied to `lidar2img`, `lidar2cam`, `l2g_r_mat`
 - `can_bus` and `l2g_t` are in global frame — unchanged by rotation. The rotated `l2g_r_mat` handles the conversion in the transformer's BEV shift code.
 
+## BEV Rotation Center (temporal alignment)
+`PerceptionTransformer.get_bev_features()` rotates the previous-frame BEV to align with the current ego yaw. The pivot is `rotate_center` (a `torchvision.transforms.functional.rotate` arg: `[x=col, y=row]`, origin at upper-left).
+
+### Default is wrong for LOKI
+The upstream default `rotate_center=[100, 100]` was designed for nuScenes' symmetric 200×200 BEV grid where ego sits at the center. LOKI's BEV is asymmetric: `bev_h=100, bev_w=200`, with `pc_range y ∈ [0, 51.2]` (forward-only). Because BEVFormer reference points map `row 0 → y≈0` (ego) and `row 99 → y≈51.2` (far), the ego sits at **`(col=100, row=0)`** — the top-center of the BEV tensor, not the middle. `[100, 100]` is one pixel below the grid (rows are 0–99 only), so every temporal frame was being rotated around a phantom point ~51m behind the ego. Even small yaw changes produced large spatial misalignment.
+
+### Fix
+All LOKI configs now set `rotate_center=[bev_w_ // 2, 0]`:
+- `projects/configs/loki/base_loki_perception.py`
+- `projects/configs/loki/loki_stage2_intent.py`
+- `projects/configs/loki/loki_finetune_from_nuscenes.py`
+- `projects/configs/loki/loki_nuscenes_zeroshot.py`
+
+Note: results from runs before this fix (e.g. `epoch_6` under `base_loki_perception`) were trained with the broken rotation and should be re-trained if temporal features matter.
+
 ## FOV Filtering (60° front camera)
 LOKI has a single front camera with 60° horizontal FOV. GT annotations in the pkl include all 360° objects. Without filtering, objects behind/beside the ego are false negatives during training.
 
