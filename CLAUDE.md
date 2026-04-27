@@ -1,7 +1,7 @@
 # UniAD + LOKI Dataset Integration
 
 ## What This Repo Is
-UniAD (Unified Autonomous Driving) adapted to work with the LOKI dataset (single front-camera, no LiDAR point cloud). Originally designed for nuScenes (6 cameras).
+UniAD (Unified Autonomous Driving) adapted to work with the LOKI dataset (single front-camera plus per-frame LiDAR sweeps used for GT-validity gating). Originally designed for nuScenes (6 cameras).
 
 ## Coordinate Systems
 - **Original LOKI pkl**: x=forward, y=lateral. `point_cloud_range = [0, -51.2, -5, 51.2, 51.2, 3]`
@@ -65,11 +65,52 @@ The FOV filter only checks angular position — agents within the 60° cone but 
   - Use `resume_from` only when optimizer parameter groups match checkpoint.
   - If model params changed (e.g., adding/removing trainable modules), resume can fail with `different number of parameter groups`; use `load_from` instead.
 
+## LiDAR Points Filter (`num_lidar_pts` / `valid_flag`)
+LOKI provides per-frame LiDAR sweeps as `pc_<frame>.ply` (binary little-endian, ~232k points each, fields `x, y, z, intensity, …`). These give a sensor-grounded occlusion proxy: a 3D GT box that contains zero LiDAR returns is heavily occluded, behind a wall, or a phantom label. This is the direct analog of the nuScenes `(num_lidar_pts + num_radar_pts) > 0` rule — the only occlusion gate UniAD uses on `main`.
+
+### How it works
+1. `create_loki_infos.py` loads `pc_<frame>.ply` and counts how many points fall inside each oriented 3D GT box (yaw-derotate, AABB containment in lidar frame). The count is stored as `num_lidar_pts` per agent.
+2. `valid_flag = num_lidar_pts >= min_lidar_pts` (default 1, configurable via `--min-lidar-pts`). Pkl values are real per-box counts — earlier versions hard-coded `num_lidar_pts=100` and `valid_flag=True`, making the filter a no-op.
+3. The dataset already wires `use_valid_flag=True` (default in `LokiE2EDataset.__init__`), so the filter takes effect at:
+   - `get_ann_info()` line 259 — masks GT before the training pipeline runs
+   - `_build_gt_eval_boxes()` line 770 — detection mAP / NDS denominator
+   - `_build_gt_tracks()` line 1070 — AMOTA / MOTP denominator
+   - `_run_intent_eval()` line 1368 — intent metrics denominator
+4. To turn it off for an A/B run: `--cfg-options data.test.use_valid_flag=False`. Predictions are not symmetrically filtered (matches nuScenes `filter_eval_boxes` GT-side semantics).
+
+### Coordinate frame
+PLY points and `info['gt_boxes']` are both in the **original LOKI lidar frame** (x=forward, y=lateral, z=up). The 90° CCW rotation lives only in the dataset loader, so the points-in-box count runs in the unrotated frame at pkl-write time. `lidar2ego` is identity (`l2e_r = np.eye(3)`, `l2e_t = 0`), so no extrinsic transform is needed.
+
+### Impact (smoke-tested on 3 scenarios)
+| Scenario | Objects | LiDAR ≥ 1 (valid) | Camera-visible | Camera-yes & LiDAR-no |
+|----------|--------:|------------------:|---------------:|----------------------:|
+| 000      | 1041    | 91.9%             | —              | —                     |
+| 100      |  650    | 96.9%             | 59.4%          | 8 / 650               |
+| 300      | 2040    | 86.6%             | 52.2%          | 9 / 2040              |
+
+The LiDAR filter is intentionally weaker than the camera filter (LiDAR is 360° while camera is 60°), so it complements rather than replaces `ObjectCameraVisibleFilter`. The interesting "camera-yes & LiDAR-no" off-diagonal is small (~10 / scenario) — those are the suspect labels the filter catches.
+
+### Files modified for LiDAR points filter
+- `tools/create_loki_infos.py` — `load_pc_ply()`, `count_points_per_box()`, real per-box counting in `process_scenario`, new `--min-lidar-pts` CLI flag
+- `tools/visualize_lidar_filter.py` — visualizer (camera image + 2D bboxes color-coded by LiDAR tier; BEV with full LiDAR sweep + 3D box outlines)
+- No code changes in `loki_e2e_dataset.py` or `transform_3d.py` — `valid_flag` plumbing already existed
+
 ### Regenerating pkl (required before training)
 ```bash
-cd /mnt/storage/UniAD && PYTHONPATH=$(pwd):$PYTHONPATH python tools/create_loki_infos.py \
-    --data-root /mnt/storage/loki_data --out-dir data/infos
+cd /root/UniAD && python tools/create_loki_infos.py \
+    --data-root /mnt/storage/loki_data --out-dir data/infos \
+    --min-lidar-pts 1
 ```
+
+### Visualization
+```bash
+python tools/visualize_lidar_filter.py \
+    --pkl data/infos/loki_infos_val.pkl \
+    --data-root /mnt/storage/loki_data \
+    --out-dir viz_lidar_filter \
+    --num-samples 12 --min-lidar-pts 1
+```
+Auto-picks frames with the most "filtered & in-FOV" agents. Camera panel shows red 2D bboxes for filtered agents annotated with their actual count; BEV panel scatters the LiDAR sweep so empty regions inside red boxes are visible.
 
 ## Intent Head (Stage 2)
 
@@ -193,11 +234,12 @@ python3 -m torch.distributed.launch \
 - `tools/create_loki_infos.py` — Generates pkl info files from raw LOKI data.
 - `tools/visualize_predictions.py` — **Primary visualization tool.** Combined camera+BEV per frame. Camera: solid green=GT from `label2d_*.json` (pixel-accurate, inherently FOV+visibility filtered), dashed colored=pred projected from 3D. BEV: white=GT 3D boxes filtered by PC range + 60° FOV cone + `gt_camera_visible` (matches eval filtering), dashed colored=pred 3D boxes with heading arrows. Uses original LOKI frame (x=forward, y=lateral). Requires `--data-root` for label2d JSONs.
 - `tools/visualize_loki_gt.py` — Visualize GT with range + FOV + camera-visibility filtering. Camera view can show projected yellow boxes for 3D agents removed by no-2D visibility filter; BEV shows final-kept / FOV-filtered / range-filtered / no2D-filtered in rotated frame.
+- `tools/visualize_lidar_filter.py` — Visualize the `num_lidar_pts` / `valid_flag` filter. Auto-picks frames with the most filtered-and-in-FOV agents. Camera panel: 2D bboxes colored by LiDAR-tier (red = filtered, yellow = borderline, green = healthy) with the count annotated. BEV panel: full LiDAR sweep scattered + 3D box outlines in the same tiers + 60° FOV cone + ego marker. Empty regions inside red boxes confirm the filter is dropping agents that LiDAR genuinely can't see.
 
 ### Data
 - `data/infos/loki_infos_train.pkl`, `data/infos/loki_infos_val.pkl` — Pre-computed info dicts
 - Raw images at `/mnt/storage/loki_data/scenario_XXX/image_XXXX.png`
-- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, gt_intent_labels, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation, gt_camera_visible`
+- Pkl info keys: `token, scene_token, frame_idx, img_filename, lidar2img, cam_intrinsic, lidar2cam, l2g_r_mat, l2g_t, can_bus, gt_boxes, gt_names, gt_labels, gt_inds, gt_velocity, gt_intent_labels, valid_flag, num_lidar_pts, ego2global_rotation, ego2global_translation, gt_camera_visible`. `num_lidar_pts` is the per-box count of `pc_*.ply` returns (real values; pre-LiDAR-filter pkls had a stub `100`); `valid_flag = num_lidar_pts >= min_lidar_pts`. Raw LiDAR sweeps live at `/mnt/storage/loki_data/scenario_XXX/pc_XXXX.ply`.
 - `gt_boxes` shape: (N, 9) = [x, y, z, l, w, h, yaw, vx, vy]
 
 ### Training Outputs
@@ -213,7 +255,7 @@ python3 -m torch.distributed.launch \
 5. No NuScenes SDK dependency
 6. 8 classes: Pedestrian, Car, Bus, Truck, Van, Motorcyclist, Bicyclist, Other
 7. Dense scenes (~20+ agents per frame on average)
-8. No depth sensor — 3D z values from GPS/IMU are noisy
+8. 3D z values from GPS/IMU are noisy (off by ~0.9–1.9m for vehicles); the model is not used as a depth source. LiDAR sweeps are present (`pc_*.ply`) but only used for `num_lidar_pts` GT-validity gating, not as model input.
 
 ## Performance Comparison
 ### LOKI (epoch 6, pre-FOV-filter, single front camera)
