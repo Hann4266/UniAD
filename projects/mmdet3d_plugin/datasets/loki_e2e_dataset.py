@@ -110,6 +110,8 @@ PKL_TO_CONFIG = {
     'pedestrian': 'Pedestrian',
     'motorcycle': 'Motorcyclist',
     'bicycle': 'Bicyclist',
+    'van': 'Van',
+    'other': 'Other',
 }
 
 
@@ -739,11 +741,9 @@ class LokiE2EDataset(Custom3DDataset):
         as the standard nuScenes CVPR-2019 config, but with LOKI class
         names and appropriate detection ranges for a single front camera.
         """
-        class_range = {name: 50.0 for name in self.CLASSES}
-        # Shorter range for small / vulnerable road users
-        for short_cls in ('Pedestrian', 'Bicyclist', 'Other'):
-            if short_cls in class_range:
-                class_range[short_cls] = 40.0
+        class_names = self._get_active_eval_classes()
+        class_range = {name: self._eval_range_for_class(name)
+                       for name in class_names}
 
         return LokiDetectionConfig(
             class_range=class_range,
@@ -754,6 +754,61 @@ class LokiE2EDataset(Custom3DDataset):
             max_boxes_per_sample=500,
             mean_ap_weight=5,
         )
+
+    @staticmethod
+    def _eval_range_for_class(class_name):
+        """Return the class-specific evaluation radius in meters."""
+        if class_name in ('Pedestrian', 'Bicyclist', 'Other'):
+            return 40.0
+        return 50.0
+
+    def _map_pkl_name_to_eval_name(self, raw_name):
+        """Map pkl class names to the configured evaluator class names."""
+        raw_name = str(raw_name)
+        det_name = PKL_TO_CONFIG.get(raw_name, raw_name)
+        if det_name not in self.CLASSES:
+            det_name = raw_name
+        return det_name if det_name in self.CLASSES else None
+
+    def _get_active_eval_classes(self):
+        """Return classes with at least one visible GT box in eval scope.
+
+        Current LOKI info files fold Van into car and skip unmapped classes,
+        so averaging over all configured classes adds guaranteed zero-AP
+        classes that were never supervised.  This keeps detection/tracking
+        metrics aligned with the GT contract used by the training pipeline.
+        """
+        active = set()
+        for info in self.data_infos:
+            mask = info['valid_flag'] if self.use_valid_flag \
+                else info['num_lidar_pts'] > 0
+            boxes_raw = info['gt_boxes'][mask]
+            names_raw = info['gt_names'][mask]
+            camera_visible = info.get(
+                'gt_camera_visible',
+                np.ones(len(info['gt_boxes']), dtype=bool))[mask]
+
+            for i in range(len(boxes_raw)):
+                if not bool(camera_visible[i]):
+                    continue
+
+                det_name = self._map_pkl_name_to_eval_name(names_raw[i])
+                if det_name is None:
+                    continue
+
+                center_xy = np.array([-boxes_raw[i, 1], boxes_raw[i, 0]],
+                                     dtype=np.float32)
+                if np.linalg.norm(center_xy) > self._eval_range_for_class(
+                        det_name):
+                    continue
+                if not _in_fov(center_xy):
+                    continue
+
+                active.add(det_name)
+
+        if not active:
+            return list(self.CLASSES)
+        return [name for name in self.CLASSES if name in active]
 
     def _build_gt_eval_boxes(self, eval_cfg):
         """Build ground-truth EvalBoxes from the val pkl.
@@ -771,6 +826,9 @@ class LokiE2EDataset(Custom3DDataset):
                 else info['num_lidar_pts'] > 0
             boxes_raw = info['gt_boxes'][mask].copy()
             names_raw = info['gt_names'][mask]
+            camera_visible = info.get(
+                'gt_camera_visible',
+                np.ones(len(info['gt_boxes']), dtype=bool))[mask]
 
             # --- 90-deg CCW rotation (identical to get_ann_info) ---
             if len(boxes_raw) > 0:
@@ -785,13 +843,8 @@ class LokiE2EDataset(Custom3DDataset):
 
             sample_boxes = []
             for i in range(len(boxes_raw)):
-                # Try PKL_TO_CONFIG first (→ LOKI capitalized names e.g. 'Car').
-                # Fall back to the raw pkl name so nuScenes-class configs
-                # (where CLASSES=['car','motorcycle',...]) also match.
-                det_name = PKL_TO_CONFIG.get(names_raw[i], names_raw[i])
-                if det_name not in self.CLASSES:
-                    det_name = names_raw[i]
-                if det_name not in self.CLASSES:
+                det_name = self._map_pkl_name_to_eval_name(names_raw[i])
+                if det_name is None or det_name not in eval_cfg.class_names:
                     continue
 
                 center = boxes_raw[i, :3]
@@ -801,6 +854,8 @@ class LokiE2EDataset(Custom3DDataset):
 
                 # Skip GT outside the front camera's 60° FOV
                 if not _in_fov(center[:2]):
+                    continue
+                if not bool(camera_visible[i]):
                     continue
 
                 quat = Quaternion(axis=[0, 0, 1],
@@ -875,6 +930,8 @@ class LokiE2EDataset(Custom3DDataset):
                 if label_idx < 0 or label_idx >= len(self.CLASSES):
                     continue
                 det_name = self.CLASSES[label_idx]
+                if det_name not in eval_cfg.class_names:
+                    continue
                 if np.linalg.norm(centers[i, :2]) > eval_cfg.class_range.get(
                         det_name, 50.0):
                     continue
@@ -1028,11 +1085,9 @@ class LokiE2EDataset(Custom3DDataset):
         nuscenes.eval.tracking.data_classes, which allows TrackingBox
         to accept LOKI class names.
         """
-        tracking_names = list(self.CLASSES)
-        class_range = {name: 50.0 for name in tracking_names}
-        for short_cls in ('Pedestrian', 'Bicyclist', 'Other'):
-            if short_cls in class_range:
-                class_range[short_cls] = 40.0
+        tracking_names = self._get_active_eval_classes()
+        class_range = {name: self._eval_range_for_class(name)
+                       for name in tracking_names}
 
         metric_worst = {
             'amota': 0.0, 'amotp': 2.0, 'recall': 0.0, 'motar': 0.0,
@@ -1072,6 +1127,9 @@ class LokiE2EDataset(Custom3DDataset):
             boxes_raw = info['gt_boxes'][mask].copy()
             names_raw = info['gt_names'][mask]
             inds_raw = info['gt_inds'][mask]
+            camera_visible = info.get(
+                'gt_camera_visible',
+                np.ones(len(info['gt_boxes']), dtype=bool))[mask]
 
             # 90-deg CCW rotation (same as get_ann_info / _build_gt_eval_boxes)
             if len(boxes_raw) > 0:
@@ -1086,13 +1144,8 @@ class LokiE2EDataset(Custom3DDataset):
 
             frame_boxes = []
             for i in range(len(boxes_raw)):
-                # Try PKL_TO_CONFIG first (→ LOKI capitalized names e.g. 'Car').
-                # Fall back to the raw pkl name so nuScenes-class configs
-                # (where CLASSES=['car','motorcycle',...]) also match.
-                det_name = PKL_TO_CONFIG.get(names_raw[i], names_raw[i])
-                if det_name not in self.CLASSES:
-                    det_name = names_raw[i]
-                if det_name not in self.CLASSES:
+                det_name = self._map_pkl_name_to_eval_name(names_raw[i])
+                if det_name is None or det_name not in track_cfg.class_names:
                     continue
                 center = boxes_raw[i, :3]
                 if np.linalg.norm(center[:2]) > track_cfg.class_range.get(
@@ -1101,6 +1154,8 @@ class LokiE2EDataset(Custom3DDataset):
 
                 # Skip GT outside the front camera's 60° FOV
                 if not _in_fov(center[:2]):
+                    continue
+                if not bool(camera_visible[i]):
                     continue
 
                 quat = Quaternion(axis=[0, 0, 1],
@@ -1182,6 +1237,8 @@ class LokiE2EDataset(Custom3DDataset):
                 if label_idx < 0 or label_idx >= len(self.CLASSES):
                     continue
                 det_name = self.CLASSES[label_idx]
+                if det_name not in track_cfg.class_names:
+                    continue
                 if np.linalg.norm(centers[i, :2]) > track_cfg.class_range.get(
                         det_name, 50.0):
                     continue

@@ -541,17 +541,24 @@ def main():
     print(f"Split: train={len(train_scenarios)}, val={len(val_scenarios)}, test={len(test_scenarios)}")
 
     # Process all scenarios
+    import time
     global_track_id_map = {}
     all_infos = {}
+    t_start = time.time()
     for i, scenario_name in enumerate(scenario_names):
         scenario_dir = os.path.join(data_root, scenario_name)
+        t0 = time.time()
         frame_infos = process_scenario(
             scenario_dir, scenario_name, global_track_id_map,
             min_lidar_pts=args.min_lidar_pts)
         all_infos[scenario_name] = frame_infos
-        if (i + 1) % 50 == 0 or (i + 1) == len(scenario_names):
-            print(f"  Processed {i + 1}/{len(scenario_names)} scenarios "
-                  f"({sum(len(v) for v in all_infos.values())} frames total)")
+        elapsed = time.time() - t_start
+        per_scene = elapsed / (i + 1)
+        eta = per_scene * (len(scenario_names) - (i + 1))
+        print(f"  [{i + 1:>4d}/{len(scenario_names)}] {scenario_name}: "
+              f"{len(frame_infos)} frames in {time.time() - t0:5.1f}s   "
+              f"(elapsed {elapsed/60:5.1f}m, ETA {eta/60:5.1f}m)",
+              flush=True)
 
     # Build split info lists
     def build_split_infos(split_scenarios):
