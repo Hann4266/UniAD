@@ -31,7 +31,7 @@ LOKI has a single front camera with 60° horizontal FOV. GT annotations in the p
 ### How it works
 - **Rotated frame**: +y = forward, +x = right. Object at (x, y) is in FOV if `y > 0` and `|atan2(x, y)| <= 30°`
 - **Training pipeline**: `ObjectFOVFilterTrack` in `transform_3d.py` filters GT boxes after range/name filters
-- **Evaluation**: `_in_fov()` helper in `loki_e2e_dataset.py` applied symmetrically to all 4 eval builders (GT detection, pred detection, GT tracking, pred tracking)
+- **Evaluation**: `_in_fov()` helper in `loki_e2e_dataset.py` applied symmetrically to all 4 eval builders (GT detection, pred detection, GT tracking, pred tracking). GT eval also applies `gt_camera_visible` after the FOV/range filters.
 - **Impact**: ~57% of GT objects are outside the 60° FOV and get filtered out
 
 ### Files modified for FOV filter
@@ -48,6 +48,7 @@ The FOV filter only checks angular position — agents within the 60° cone but 
 2. `ObjectCameraVisibleFilter` pipeline transform filters `gt_bboxes_3d` and all parallel arrays by this flag
 3. Runs after `ObjectFOVFilterTrack` in the training pipeline — the FOV filter removes behind/beside agents, the visibility filter removes occluded agents within the FOV
 4. All upstream filters (`ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`) propagate `gt_camera_visible` in sync
+5. Detection/tracking evaluation applies the same camera visibility contract on GT in `_build_gt_eval_boxes()` and `_build_gt_tracks()`. Predictions are filtered by range/FOV/class only, matching the single-camera eval scope.
 
 ### Impact
 ~46% of 3D agents across all scenes have no 2D bbox (checked 100 scenarios, 6967 frames). After FOV filtering removes ~57%, the visibility filter further removes occluded-from-camera agents within the FOV cone.
@@ -57,7 +58,7 @@ The FOV filter only checks angular position — agents within the 60° cone but 
 - `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — `ObjectCameraVisibleFilter` class + `gt_camera_visible` propagation in all 3 existing filters
 - `projects/mmdet3d_plugin/datasets/pipelines/__init__.py` — export
 - `projects/configs/loki/base_loki_perception.py` — added after `ObjectFOVFilterTrack`
-- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `gt_camera_visible` in `get_ann_info()` and `get_data_info()`
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — `gt_camera_visible` in `get_ann_info()` / `get_data_info()`, and GT filtering in detection/tracking/intent eval
 
 ### Compatibility notes (training stability)
 - `gt_labels_intent` now populated with real LOKI intent labels from pkl (see Intent Head section below).
@@ -72,10 +73,10 @@ LOKI provides per-frame LiDAR sweeps as `pc_<frame>.ply` (binary little-endian, 
 1. `create_loki_infos.py` loads `pc_<frame>.ply` and counts how many points fall inside each oriented 3D GT box (yaw-derotate, AABB containment in lidar frame). The count is stored as `num_lidar_pts` per agent.
 2. `valid_flag = num_lidar_pts >= min_lidar_pts` (default 1, configurable via `--min-lidar-pts`). Pkl values are real per-box counts — earlier versions hard-coded `num_lidar_pts=100` and `valid_flag=True`, making the filter a no-op.
 3. The dataset already wires `use_valid_flag=True` (default in `LokiE2EDataset.__init__`), so the filter takes effect at:
-   - `get_ann_info()` line 259 — masks GT before the training pipeline runs
-   - `_build_gt_eval_boxes()` line 770 — detection mAP / NDS denominator
-   - `_build_gt_tracks()` line 1070 — AMOTA / MOTP denominator
-   - `_run_intent_eval()` line 1368 — intent metrics denominator
+   - `get_ann_info()` — masks GT before the training pipeline runs
+   - `_build_gt_eval_boxes()` — detection mAP / NDS denominator
+   - `_build_gt_tracks()` — AMOTA / MOTP denominator
+   - `_run_intent_eval()` — intent metrics denominator
 4. To turn it off for an A/B run: `--cfg-options data.test.use_valid_flag=False`. Predictions are not symmetrically filtered (matches nuScenes `filter_eval_boxes` GT-side semantics).
 
 ### Coordinate frame
@@ -95,7 +96,9 @@ The LiDAR filter is intentionally weaker than the camera filter (LiDAR is 360° 
 - `tools/visualize_lidar_filter.py` — visualizer (camera image + 2D bboxes color-coded by LiDAR tier; BEV with full LiDAR sweep + 3D box outlines)
 - No code changes in `loki_e2e_dataset.py` or `transform_3d.py` — `valid_flag` plumbing already existed
 
-### Regenerating pkl (required before training)
+### Regenerating pkl (when generated fields change)
+For the eval-only class/visibility fix, **no pkl regeneration is required** as long as the pkl already has `gt_camera_visible`. Regenerate pkls when changing pkl-generated fields such as `num_lidar_pts`, `valid_flag`, class mapping, or intent labels.
+
 ```bash
 cd /root/UniAD && python tools/create_loki_infos.py \
     --data-root /mnt/storage/loki_data --out-dir data/infos \
@@ -214,10 +217,10 @@ python3 -m torch.distributed.launch \
 ## Key Files
 
 ### Dataset
-- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — Main dataset class `LokiE2EDataset`. Mirrors `NuScenesE2EDataset` but single-camera. Contains `get_ann_info()`, `get_data_info()`, `prepare_train_data()`, `union2one()`, and full evaluation pipeline with FOV filtering.
+- `projects/mmdet3d_plugin/datasets/loki_e2e_dataset.py` — Main dataset class `LokiE2EDataset`. Mirrors `NuScenesE2EDataset` but single-camera. Contains `get_ann_info()`, `get_data_info()`, `prepare_train_data()`, `union2one()`, and full evaluation pipeline with FOV, camera-visibility, and active-class filtering.
 - `projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py` — Pipeline transforms including `ObjectRangeFilterTrack`, `ObjectNameFilterTrack`, `ObjectFOVFilterTrack`, `ObjectCameraVisibleFilter`
 - `projects/mmdet3d_plugin/datasets/pipelines/loki_loading.py` — `LoadLokiImage` (single camera, scales lidar2img if resized from 1920x1208), `GenerateDummyOccLabels`
-- `PKL_TO_CONFIG` dict maps lowercase pkl names → capitalized config names (e.g. `'car'→'Car'`)
+- `PKL_TO_CONFIG` dict maps lowercase pkl names → capitalized config names (e.g. `'car'→'Car'`, `'van'→'Van'`, `'other'→'Other'`)
 
 ### Config
 - `projects/configs/loki/base_loki_perception.py` — Single config file. 8 classes, BEV 200x100 (w x h), ResNet101+DCN backbone. Train pipeline includes `ObjectFOVFilterTrack(fov_deg=60.0)` and `ObjectCameraVisibleFilter`.
@@ -258,15 +261,21 @@ python3 -m torch.distributed.launch \
 8. 3D z values from GPS/IMU are noisy (off by ~0.9–1.9m for vehicles); the model is not used as a depth source. LiDAR sweeps are present (`pc_*.ply`) but only used for `num_lidar_pts` GT-validity gating, not as model input.
 
 ## Performance Comparison
-### LOKI (epoch 6, pre-FOV-filter, single front camera)
+### LOKI (older epoch 6, pre-FOV-filter / pre-eval-contract fix, single front camera)
 - mAP: 0.2284, NDS: 0.2472, AMOTA: 0.2619
+
+### LOKI (epoch 10, current eval contract, single front camera)
+- Existing result file: `/mnt/storage/UniAD/work_dirs/base_loki_perception/results_epoch10.pkl`
+- Active eval classes derived from visible GT: `Pedestrian`, `Car`, `Bus`, `Truck`, `Motorcyclist`, `Bicyclist`
+- Visible eval GT after valid_flag + range + FOV + `gt_camera_visible`: 35,073 boxes
+- mAP: 0.3116, NDS: 0.3347, AMOTA: 0.2895, recall: 0.4551
 
 ### nuScenes UniAD reference (6 cameras)
 - mAP: 0.368, AMOTA: 0.349 (UniAD(5) from paper)
 - Front_BEV(3) single-cam variant: mAP: 0.33, AMOTA: 0.328
 
 ### Gap analysis
-The ~4x mAP gap vs nuScenes is expected given: single camera (no multi-view), no LiDAR depth, FOV false negatives (now fixed), noisy z GT, dense LOKI scenes. The FOV filter should significantly improve metrics by removing ~57% of invisible GT objects.
+Old Loki metrics were understated by eval-denominator issues: absent `Van`/`Other` classes were averaged as zero-AP classes, and detection/tracking GT still included camera-invisible agents after FOV filtering. Current eval derives active classes from visible GT and applies `gt_camera_visible` on GT, bringing epoch-10 mAP close to the nuScenes Front_BEV single-camera reference. Remaining gap is still expected from single front-camera coverage, no image-based depth sensor, noisy z GT, and dense LOKI scenes.
 
 ## Train / Eval Commands
 ```bash
@@ -310,10 +319,12 @@ python tools/visualize_loki_gt.py \
 
 ### Detection Evaluation
 `LokiE2EDataset.evaluate()` in `loki_e2e_dataset.py` computes nuScenes-style detection metrics:
+- Eval classes are derived from classes with at least one visible GT box after `valid_flag` + range + FOV + `gt_camera_visible`, so absent pkl classes (currently `Van` and `Other`) do not contribute guaranteed zero AP
 - Per-class AP at distance thresholds [0.5, 1.0, 2.0, 4.0]m
 - TP errors: ATE (translation), ASE (scale), AOE (orientation), AVE (velocity)
 - mAP, NDS (nuScenes Detection Score, attr_err set to worst since LOKI has no attributes)
 - **FOV filter**: Both GT and predictions are filtered to 60° front-camera FOV before metric computation
+- **Camera visibility filter**: GT boxes with `gt_camera_visible=False` are excluded from detection eval. Predictions are not camera-visibility filtered because visibility is a GT annotation.
 
 Uses nuscenes-devkit algorithms (accumulate, calc_ap, calc_tp) with custom `LokiDetectionConfig` and `LokiDetectionBox` that bypass nuScenes class name assertions.
 
@@ -322,8 +333,9 @@ Same `evaluate()` also runs tracking eval (AMOTA, MOTP, IDS, etc.):
 - Builds GT/pred tracks grouped by (scene, timestamp)
 - GT track IDs from `gt_inds` in pkl; pred track IDs from model `track_ids`
 - Uses nuscenes `TrackingEvaluation` per class with motmetrics
-- Creates `TrackingConfig` with LOKI names (sets global TRACKING_NAMES so TrackingBox accepts them)
+- Creates `TrackingConfig` with active LOKI eval names (sets global TRACKING_NAMES so TrackingBox accepts them)
 - **FOV filter**: Both GT and pred tracks are filtered to 60° FOV
+- **Camera visibility filter**: GT tracks with `gt_camera_visible=False` are excluded from tracking eval, matching training visibility filtering
 
 ### Evaluation frame
 Both GT and predictions are compared in the **rotated lidar frame** (the frame the model operates in). GT boxes from pkl are rotated 90° CCW (same transform as `get_ann_info`) before comparison. No global-frame transform is needed since all per-frame comparisons use the same coordinate system.
