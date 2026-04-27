@@ -24,6 +24,8 @@ from collections import defaultdict
 import re
 import io
 
+from plyfile import PlyData
+
 
 # --------------------------------------------------------------------- #
 #  LOKI → UniAD class mapping
@@ -71,6 +73,44 @@ LIDAR2IMG = CAM_INTRINSIC @ LIDAR2CAM
 # --------------------------------------------------------------------- #
 #  Helpers
 # --------------------------------------------------------------------- #
+def load_pc_ply(path):
+    """Read a LOKI pc_*.ply sweep and return its points as (N, 3) float32.
+
+    Points are in the LOKI lidar frame (x=forward, y=lateral, z=up).
+    """
+    ply = PlyData.read(path)
+    v = ply['vertex'].data
+    return np.stack([v['x'], v['y'], v['z']], axis=1).astype(np.float32)
+
+
+def count_points_per_box(pts_xyz, centers, sizes, yaws):
+    """Count LiDAR points inside each oriented 3D box.
+
+    pts_xyz: (P, 3) point cloud in lidar frame.
+    centers: (N, 3) box centers.
+    sizes:   (N, 3) box extents [dx, dy, dz] (full lengths, not half).
+    yaws:    (N,)   rotations about +z.
+    Returns: (N,)   integer counts.
+
+    Memory-friendly: loops over boxes (each test is O(P), and N is ~tens).
+    """
+    n = len(centers)
+    counts = np.zeros(n, dtype=np.int64)
+    if pts_xyz.shape[0] == 0 or n == 0:
+        return counts
+    for i in range(n):
+        rel = pts_xyz - centers[i]
+        c, s = np.cos(-yaws[i]), np.sin(-yaws[i])    # inverse-yaw rotation
+        lx = c * rel[:, 0] - s * rel[:, 1]
+        ly = s * rel[:, 0] + c * rel[:, 1]
+        lz = rel[:, 2]
+        hx, hy, hz = sizes[i, 0] * 0.5, sizes[i, 1] * 0.5, sizes[i, 2] * 0.5
+        counts[i] = int(((np.abs(lx) <= hx) &
+                          (np.abs(ly) <= hy) &
+                          (np.abs(lz) <= hz)).sum())
+    return counts
+
+
 def euler_to_rotation_matrix(roll, pitch, yaw):
     """Convert Euler angles (roll, pitch, yaw) to a 3×3 rotation matrix."""
     cr, sr = np.cos(roll), np.sin(roll)
@@ -205,8 +245,14 @@ def get_frame_data_availability(scenario_dir, frame_idx):
     }
 
 
-def process_scenario(scenario_dir, scenario_name, global_track_id_map):
-    """Process a single scenario and return a list of frame info dicts."""
+def process_scenario(scenario_dir, scenario_name, global_track_id_map,
+                     min_lidar_pts=1):
+    """Process a single scenario and return a list of frame info dicts.
+
+    ``min_lidar_pts`` sets the threshold for ``valid_flag``: a 3D GT box is
+    marked valid iff at least this many LiDAR points fall inside it (after
+    yaw-derotation). Default 1 matches the nuScenes UniAD convention.
+    """
     frame_indices = get_sorted_frame_indices(scenario_dir)
     if len(frame_indices) == 0:
         return []
@@ -382,6 +428,22 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             gt_velocity = np.zeros((0, 2), dtype=np.float64)
             gt_intent_labels = np.array([], dtype=np.int64)
 
+        # Per-box LiDAR point count from pc_*.ply (analog of nuScenes
+        # num_lidar_pts). valid_flag = (num_lidar_pts >= min_lidar_pts).
+        pc_path = os.path.join(scenario_dir, f"pc_{fid_str}.ply")
+        if n_obj > 0 and os.path.exists(pc_path):
+            try:
+                pts = load_pc_ply(pc_path)
+                num_lidar_pts = count_points_per_box(
+                    pts, gt_boxes[:, 0:3], gt_boxes[:, 3:6], gt_boxes[:, 6])
+            except Exception as e:
+                print(f"  WARNING: failed to load {pc_path}: {e}; "
+                      f"setting num_lidar_pts = 0")
+                num_lidar_pts = np.zeros(n_obj, dtype=np.int64)
+        else:
+            num_lidar_pts = np.zeros(n_obj, dtype=np.int64)
+        valid_flag = num_lidar_pts >= int(min_lidar_pts)
+
         # Timestamp: use frame index / fps as seconds
         timestamp = float(fidx) / 2.0 / fps  # convert frame step to seconds
 
@@ -418,9 +480,9 @@ def process_scenario(scenario_dir, scenario_name, global_track_id_map):
             gt_velocity=gt_velocity.astype(np.float32),
             gt_intent_labels=gt_intent_labels,
 
-            # Validity (all are valid since we check image exists)
-            valid_flag=np.ones(n_obj, dtype=bool),
-            num_lidar_pts=np.ones(n_obj, dtype=np.int64) * 100,
+            # Validity: per-box LiDAR-point count from pc_*.ply
+            valid_flag=valid_flag,
+            num_lidar_pts=num_lidar_pts,
 
             # Camera visibility: True if the 3D agent has a 2D bbox in label2d
             gt_camera_visible=gt_camera_visible,
@@ -455,6 +517,11 @@ def main():
     parser.add_argument('--split-ratio', type=float, nargs=3,
                         default=[0.8, 0.1, 0.1],
                         help='Train/val/test split ratio')
+    parser.add_argument('--min-lidar-pts', type=int, default=1,
+                        help='Min LiDAR points-in-box for valid_flag '
+                             '(matches nuScenes "≥1"). Boxes below this '
+                             'are dropped at train and eval time when '
+                             'use_valid_flag=True.')
     args = parser.parse_args()
 
     data_root = args.data_root
@@ -478,7 +545,9 @@ def main():
     all_infos = {}
     for i, scenario_name in enumerate(scenario_names):
         scenario_dir = os.path.join(data_root, scenario_name)
-        frame_infos = process_scenario(scenario_dir, scenario_name, global_track_id_map)
+        frame_infos = process_scenario(
+            scenario_dir, scenario_name, global_track_id_map,
+            min_lidar_pts=args.min_lidar_pts)
         all_infos[scenario_name] = frame_infos
         if (i + 1) % 50 == 0 or (i + 1) == len(scenario_names):
             print(f"  Processed {i + 1}/{len(scenario_names)} scenarios "
