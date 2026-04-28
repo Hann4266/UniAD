@@ -1,0 +1,89 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{adjustbox}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+
+\section*{Experiment Results: UniAD on nuScenes vs.\ LOKI}
+
+% ============================================================
+%  Stage 1: Perception + Tracking
+% ============================================================
+\begin{table}[h]
+\centering
+\caption{Stage 1 --- Perception \& Tracking Results}
+\label{tab:stage1}
+\small
+\begin{tabular}{@{} c l l c c c c c @{}}
+\toprule
+\textbf{ID} & \textbf{Run ID} & \textbf{Description} & \textbf{Cam} & \textbf{Stride} & \textbf{Ep} & \textbf{mAP $\uparrow$} & \textbf{AMOTA $\uparrow$} \\
+\midrule
+\multicolumn{8}{l}{\textit{nuScenes baselines (from UniAD paper)}} \\
+\addlinespace[2pt]
+--- & ---                                & UniAD full (6-cam)           & 6 & --- & --- & 0.368 & 0.349 \\
+--- & ---                                & Front\_BEV single-cam        & 1 & --- & --- & 0.330 & 0.328 \\
+\midrule
+\multicolumn{8}{l}{\textit{LOKI experiments}} \\
+\addlinespace[2pt]
+S1.1 & \texttt{nuscenes\_on\_loki}        & Zero-shot (nuScenes weights) & 1 & 1 &  0 & 0.045 & 0.030 \\
+S1.2 & \texttt{finetuned}                 & Fine-tune from nuScenes      & 1 & 1 &  6 & 0.200 & 0.230 \\
+S1.3 & \texttt{base\_loki\_perception}    & Scratch, pre-FOV filter      & 1 & 1 &  6 & 0.228 & 0.262 \\
+S1.4 & \texttt{base\_loki\_perception}    & Scratch, pre-FOV filter      & 1 & 1 & 10 & 0.220 & 0.270 \\
+S1.5 & \texttt{stride4\_perception}       & Scratch                      & 1 & 4 &  6 & 0.187 & 0.161 \\
+S1.6 & \texttt{stage1\_intent\_filtered}  & Scratch, intent-filtered     & 1 & 1 &  6 & 0.188 & 0.171 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+%  Stage 2: Intent Prediction
+% ============================================================
+\begin{table}[h]
+\centering
+\caption{Stage 2 --- Intent Prediction Results (frozen perception backbone)}
+\label{tab:stage2}
+\small
+\adjustbox{max width=\textwidth}{%
+\begin{tabular}{@{} l c c c c c c c @{}}
+\toprule
+\textbf{Run ID} & \textbf{Stage 1 Backbone} & \textbf{Stride} & \textbf{Ep} & \textbf{mAP $\uparrow$} & \textbf{AMOTA $\uparrow$} & \textbf{Acc $\uparrow$} & \textbf{F1 $\uparrow$} \\
+\midrule
+\multicolumn{8}{l}{\textit{nuScenes}} \\
+\addlinespace[2pt]
+Spacial+AA (TrackFormer) & --- & --- & --- & ---   & ---   & 0.825 & 0.477 \\
+\midrule
+\multicolumn{8}{l}{\textit{LOKI experiments (1 camera, no map features)}} \\
+\addlinespace[2pt]
+\texttt{stage\_2\_base}             & S1.4 & 1 & 20 & 0.212 & 0.251 & 0.472 & 0.232 \\
+\texttt{stride4\_stage2}            & S1.5 & 4 & 20 & 0.164 & 0.136 & 0.456 & 0.233 \\
+\texttt{stage2\_intent\_filtered}   & S1.6 & 4 & 20 & 0.150 & 0.143 & 0.459 & 0.231 \\
+\texttt{stage2\_filt\_scratch6}     & S1.3 & 4 & 20 & 0.211 & 0.227 & 0.449 & 0.223 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+% ============================================================
+%  Notes
+% ============================================================
+\vspace{0.5em}
+\noindent\textbf{Notes:}
+\begin{itemize}\setlength{\itemsep}{2pt}
+  \item \textbf{nuScenes baseline}: Spacial+AA (BEV spatial + Agent-Agent attention, TrackFormer perception input, no Agent-Map interaction). Chosen as the fair comparison for LOKI, which has no HD map input. Uses 6 surround cameras + LiDAR depth supervision.
+  \item \textbf{Zero-shot}: nuScenes-trained weights evaluated directly on LOKI (10 nuScenes classes mapped to 8 LOKI classes).
+  \item \textbf{Fine-tune}: nuScenes pre-trained backbone, fine-tuned on LOKI for 6 epochs.
+  \item \textbf{Pre-FOV filter}: Trained before FOV and camera-visibility filtering were implemented; GT includes invisible objects.
+  \item \textbf{Stride}: \texttt{queue\_stride} (temporal frame spacing). Default = 1; stride = 4 corresponds to 0.8\,s spacing at 5\,FPS.
+  \item \textbf{Intent-filtered}: Trained on 367/515 scenes that contain $\geq$1 rare intent (LCL/LCR/TL/TR).
+  \item \textbf{Stage 2 mAP/AMOTA}: From the frozen perception backbone at eval time; may differ from Stage 1 due to epoch selection.
+  \item All LOKI experiments: single front camera (60\textdegree{} FOV), no LiDAR, no HD maps
+\end{itemize}
+
+\end{document}
